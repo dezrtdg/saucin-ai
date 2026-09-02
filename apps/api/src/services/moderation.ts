@@ -16,12 +16,18 @@ export type ModerationSettings = {
 };
 
 export type ModerationAction = 'staff_review'|'reminder'|'warning'|'delete_message'|'timeout_10m'|'timeout_1h';
+export type PrimaryModerationAction = Exclude<ModerationAction,'delete_message'>;
+
+export type ModerationActionStep = {
+  action: PrimaryModerationAction;
+  delete_message: boolean;
+};
 
 export type ModerationActionLadder = {
-  first: ModerationAction;
-  second: ModerationAction;
-  third: ModerationAction;
-  fourth_plus: ModerationAction;
+  first: ModerationActionStep;
+  second: ModerationActionStep;
+  third: ModerationActionStep;
+  fourth_plus: ModerationActionStep;
 };
 
 export type ModerationDetection = {
@@ -32,6 +38,7 @@ export type ModerationDetection = {
   reason: string;
   evidence: string;
   recommended_action: ModerationAction;
+  delete_message_recommended: boolean;
   offense_number: number;
   prior_confirmed_count: number;
   repeat_window_days_used: number;
@@ -67,21 +74,45 @@ function clamp(value:number,min:number,max:number){ return Math.max(min,Math.min
 function unique(values:string[],max=100){ return [...new Set(values.map(v=>String(v).trim()).filter(Boolean))].slice(0,max); }
 
 const moderationActions:ModerationAction[]=['staff_review','reminder','warning','delete_message','timeout_10m','timeout_1h'];
+const primaryModerationActions:PrimaryModerationAction[]=['staff_review','reminder','warning','timeout_10m','timeout_1h'];
+
 function moderationAction(value:unknown,fallback:ModerationAction='staff_review'):ModerationAction {
   const candidate=String(value||'') as ModerationAction;
   return moderationActions.includes(candidate)?candidate:fallback;
 }
-function normalizeActionLadder(value:unknown,fallbackValue:unknown='staff_review'):ModerationActionLadder {
-  const fallback=moderationAction(fallbackValue);
+function primaryModerationAction(value:unknown,fallback:PrimaryModerationAction='staff_review'):PrimaryModerationAction {
+  const candidate=String(value||'') as PrimaryModerationAction;
+  return primaryModerationActions.includes(candidate)?candidate:fallback;
+}
+function normalizeActionStep(value:unknown,fallbackValue:unknown='staff_review'):ModerationActionStep {
+  const legacyFallback=moderationAction(fallbackValue);
+  const fallbackAction:PrimaryModerationAction=legacyFallback==='delete_message'?'staff_review':primaryModerationAction(legacyFallback);
+  const fallbackDelete=legacyFallback==='delete_message';
+
+  // v1.3.4 and earlier stored each ladder step as a string. Preserve those values.
+  if(typeof value==='string'){
+    const legacy=moderationAction(value,legacyFallback);
+    if(legacy==='delete_message') return {action:'staff_review',delete_message:true};
+    return {action:primaryModerationAction(legacy,fallbackAction),delete_message:false};
+  }
+
   const raw=value && typeof value==='object' && !Array.isArray(value) ? value as Record<string,unknown> : {};
+  const rawAction=moderationAction(raw.action,legacyFallback);
   return {
-    first:moderationAction(raw.first,fallback),
-    second:moderationAction(raw.second,fallback),
-    third:moderationAction(raw.third,fallback),
-    fourth_plus:moderationAction(raw.fourth_plus,fallback)
+    action:rawAction==='delete_message'?'staff_review':primaryModerationAction(rawAction,fallbackAction),
+    delete_message:Boolean(raw.delete_message) || rawAction==='delete_message' || fallbackDelete && !raw.action
   };
 }
-function ladderAction(ladder:ModerationActionLadder,offenseNumber:number):ModerationAction {
+function normalizeActionLadder(value:unknown,fallbackValue:unknown='staff_review'):ModerationActionLadder {
+  const raw=value && typeof value==='object' && !Array.isArray(value) ? value as Record<string,unknown> : {};
+  return {
+    first:normalizeActionStep(raw.first,fallbackValue),
+    second:normalizeActionStep(raw.second,fallbackValue),
+    third:normalizeActionStep(raw.third,fallbackValue),
+    fourth_plus:normalizeActionStep(raw.fourth_plus,fallbackValue)
+  };
+}
+function ladderStep(ladder:ModerationActionLadder,offenseNumber:number):ModerationActionStep {
   if(offenseNumber<=1) return ladder.first;
   if(offenseNumber===2) return ladder.second;
   if(offenseNumber===3) return ladder.third;
@@ -146,7 +177,7 @@ export async function updateModerationRuleSettings(articleId:number,input:{
       recommended_action=EXCLUDED.recommended_action,action_ladder=EXCLUDED.action_ladder,repeat_window_days=EXCLUDED.repeat_window_days,
       exempt_role_ids=EXCLUDED.exempt_role_ids,channel_ids=EXCLUDED.channel_ids,updated_at=NOW()
     RETURNING *`,
-    [articleId,input.enabled,input.minimum_confidence==null?null:clamp(input.minimum_confidence,0,1),ladder.first,JSON.stringify(ladder),
+    [articleId,input.enabled,input.minimum_confidence==null?null:clamp(input.minimum_confidence,0,1),ladder.first.action,JSON.stringify(ladder),
      input.repeat_window_days==null?null:clamp(input.repeat_window_days,1,90),unique(input.exempt_role_ids),unique(input.channel_ids)]
   );
   return result.rows[0];
@@ -500,19 +531,21 @@ confidence must be 0-1. evidence should quote or concisely identify the specific
   const priorCount=Number(prior.rows[0]?.count||0);
   const offenseNumber=priorCount+1;
   const ladder=normalizeActionLadder(rule.action_ladder,rule.recommended_action);
-  const recommendedAction=ladderAction(ladder,offenseNumber);
+  const selectedStep=ladderStep(ladder,offenseNumber);
+  const recommendedAction:ModerationAction=selectedStep.action;
+  const deleteMessageRecommended=selectedStep.delete_message;
 
   const inserted=await db.query(`
     INSERT INTO moderation_cases
       (guild_id,channel_id,channel_name,message_id,discord_message_id,discord_user_id,author_name,message_content,
-       rule_article_id,rule_title,confidence,ai_reason,evidence,recommended_action,prior_confirmed_count,offense_number,
-       repeat_window_days_used,action_ladder_snapshot,mode,status)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,'observe','pending')
+       rule_article_id,rule_title,confidence,ai_reason,evidence,recommended_action,delete_message_recommended,
+       prior_confirmed_count,offense_number,repeat_window_days_used,action_ladder_snapshot,mode,status)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,'observe','pending')
     ON CONFLICT (discord_message_id) DO NOTHING
     RETURNING id`,[
       input.guildId,input.channelId,input.channelName||null,input.discordMessageId,input.storedMessageId,input.discordUserId,input.authorName,input.content,
-      rule.id,rule.title,confidence,String(parsed.reason||'').slice(0,1200),String(parsed.evidence||'').slice(0,500),recommendedAction,priorCount,
-      offenseNumber,repeatDays,JSON.stringify(ladder)
+      rule.id,rule.title,confidence,String(parsed.reason||'').slice(0,1200),String(parsed.evidence||'').slice(0,500),recommendedAction,
+      deleteMessageRecommended,priorCount,offenseNumber,repeatDays,JSON.stringify(ladder)
     ]);
 
   if(!inserted.rowCount){
@@ -525,17 +558,19 @@ confidence must be 0-1. evidence should quote or concisely identify the specific
   await db.query('UPDATE moderation_cases SET public_id=$1 WHERE id=$2',[publicId,caseId]);
   await db.query(`INSERT INTO moderation_case_events (case_id,event_type,details) VALUES ($1,'detected',$2::jsonb)`,[caseId,JSON.stringify({
     confidence,rule_id:rule.id,mode:'observe',prior_confirmed_count:priorCount,offense_number:offenseNumber,
-    repeat_window_days:repeatDays,recommended_action:recommendedAction,action_ladder:ladder
+    repeat_window_days:repeatDays,recommended_action:recommendedAction,delete_message_recommended:deleteMessageRecommended,action_ladder:ladder
   })]);
 
   await diagnostic(settings,{...baseDiag,resultCode:'case_created',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence,threshold,details:{
-    public_id:publicId,recommended_action:recommendedAction,prior_confirmed_count:priorCount,offense_number:offenseNumber,
-    repeat_window_days:repeatDays,action_ladder:ladder,ai_reason:parsed.reason,ai_evidence:parsed.evidence
+    public_id:publicId,recommended_action:recommendedAction,delete_message_recommended:deleteMessageRecommended,
+    prior_confirmed_count:priorCount,offense_number:offenseNumber,repeat_window_days:repeatDays,
+    action_ladder:ladder,ai_reason:parsed.reason,ai_evidence:parsed.evidence
   }});
 
   return {
     case_id:caseId,public_id:publicId,rule_title:rule.title,confidence,reason:String(parsed.reason||''),evidence:String(parsed.evidence||''),
-    recommended_action:recommendedAction,offense_number:offenseNumber,prior_confirmed_count:priorCount,repeat_window_days_used:repeatDays,
+    recommended_action:recommendedAction,delete_message_recommended:deleteMessageRecommended,
+    offense_number:offenseNumber,prior_confirmed_count:priorCount,repeat_window_days_used:repeatDays,
     audit_channel_id:settings.audit_channel_id,post_to_audit:settings.post_observations_to_audit
   };
 }

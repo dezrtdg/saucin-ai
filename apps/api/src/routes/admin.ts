@@ -364,19 +364,22 @@ export async function adminRoutes(app: FastifyInstance) {
 
     admin.put('/api/moderation/rules/:articleId', async (request, reply) => {
       const params = z.object({ articleId: z.coerce.number().int().positive() }).parse(request.params);
-      const action=z.enum(['staff_review','reminder','warning','delete_message','timeout_10m','timeout_1h']);
+      const legacyAction=z.enum(['staff_review','reminder','warning','delete_message','timeout_10m','timeout_1h']);
+      const primaryAction=z.enum(['staff_review','reminder','warning','timeout_10m','timeout_1h']);
+      const step=z.object({action:primaryAction,delete_message:z.boolean().default(false)});
       const body = z.object({
         enabled: z.boolean(), minimum_confidence: z.coerce.number().min(0.5).max(0.99).nullable().optional(),
-        recommended_action: action.optional(),
-        action_ladder: z.object({first:action,second:action,third:action,fourth_plus:action}).optional(),
+        recommended_action: legacyAction.optional(),
+        action_ladder: z.object({first:step,second:step,third:step,fourth_plus:step}).optional(),
         repeat_window_days: z.coerce.number().int().min(1).max(90).nullable().optional(),
         exempt_role_ids: z.array(z.string().trim().min(1).max(64)).max(100).default([]),
         channel_ids: z.array(z.string().trim().min(1).max(64)).max(500).default([])
       }).parse(request.body);
       const fallback=body.recommended_action||'staff_review';
-      const ladder=body.action_ladder||{first:fallback,second:fallback,third:fallback,fourth_plus:fallback};
+      const fallbackStep={action:(fallback==='delete_message'?'staff_review':fallback) as 'staff_review'|'reminder'|'warning'|'timeout_10m'|'timeout_1h',delete_message:fallback==='delete_message'};
+      const ladder=body.action_ladder||{first:fallbackStep,second:fallbackStep,third:fallbackStep,fourth_plus:fallbackStep};
       try { return await updateModerationRuleSettings(params.articleId, {
-        ...body,recommended_action:ladder.first,action_ladder:ladder,
+        ...body,recommended_action:ladder.first.action,action_ladder:ladder,
         minimum_confidence: body.minimum_confidence ?? null, repeat_window_days: body.repeat_window_days ?? null
       }); }
       catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'unable to save moderation rule settings' }); }

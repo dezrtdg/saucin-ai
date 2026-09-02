@@ -22,3 +22,7 @@
 .ruleEscalation{display:block;margin-top:4px;color:#797381;font:10px ui-monospace,monospace;text-transform:capitalize}
 @media(max-width:1100px){.ladderGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:700px){.ladderGrid{grid-template-columns:1fr}}
+
+.deleteToggle{display:flex;align-items:center;gap:7px;margin-top:2px;padding:8px 9px;border:1px solid #2b2b34;border-radius:7px;background:#121218;color:#aaaab4;font-size:10.5px;cursor:pointer}
+.deleteToggle input{margin:0;accent-color:#9561c7}
+.deleteToggle:has(input:checked){border-color:#4c365f;background:#18111e;color:#d5b9e8}

@@ -401,7 +401,7 @@ async function postModerationAudit(detection: ModerationDetection, message: Mess
     const link = message.guildId ? `https://discord.com/channels/${message.guildId}/${message.channelId}/${message.id}` : '';
     const confidence = `${Math.round(detection.confidence * 100)}%`;
     await (channel as any).send({
-      content: `**${detection.public_id} · Observe-only moderation detection**\n**Member:** ${message.author.username} (${message.author.id})\n**Rule:** ${detection.rule_title}\n**Confidence:** ${confidence}\n**Escalation:** offense #${detection.offense_number} (${detection.prior_confirmed_count} prior confirmed in ${detection.repeat_window_days_used} days)\n**Would recommend:** ${detection.recommended_action.replaceAll('_',' ')}\n**Why:** ${detection.reason}\n${detection.evidence ? `**Evidence:** ${detection.evidence}\n` : ''}${link ? `**Message:** ${link}` : ''}`.slice(0,1900),
+      content: `**${detection.public_id} · Observe-only moderation detection**\n**Member:** ${message.author.username} (${message.author.id})\n**Rule:** ${detection.rule_title}\n**Confidence:** ${confidence}\n**Escalation:** offense #${detection.offense_number} (${detection.prior_confirmed_count} prior confirmed in ${detection.repeat_window_days_used} days)\n**Would recommend:** ${detection.recommended_action.replaceAll('_',' ')}${detection.delete_message_recommended?' + delete message':''}\n**Why:** ${detection.reason}\n${detection.evidence ? `**Evidence:** ${detection.evidence}\n` : ''}${link ? `**Message:** ${link}` : ''}`.slice(0,1900),
       allowedMentions: { parse: [] }
     });
   } catch (error) {

@@ -649,3 +649,15 @@ ALTER TABLE moderation_cases
 UPDATE moderation_cases
 SET offense_number = GREATEST(1, prior_confirmed_count + 1)
 WHERE offense_number = 1 AND prior_confirmed_count > 0;
+
+
+-- v1.3.5: allow Delete Message as a secondary action on each escalation step
+ALTER TABLE moderation_cases
+  ADD COLUMN IF NOT EXISTS delete_message_recommended BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Preserve the meaning of older observe-mode cases where Delete Message was the
+-- only simulated recommendation.
+UPDATE moderation_cases
+SET delete_message_recommended = TRUE
+WHERE recommended_action = 'delete_message'
+  AND delete_message_recommended = FALSE;

@@ -19,7 +19,12 @@ export async function saveModerationRuleAction(articleId:string,formData:FormDat
   const fourthPlus=val(formData,'action_fourth_plus')||third;
   await api(`/api/moderation/rules/${articleId}`,{method:'PUT',body:JSON.stringify({
     enabled:checked(formData,'enabled'),minimum_confidence:min?Number(min):null,recommended_action:first,
-    action_ladder:{first,second,third,fourth_plus:fourthPlus},repeat_window_days:days?Number(days):null,
+    action_ladder:{
+      first:{action:first,delete_message:checked(formData,'delete_first')},
+      second:{action:second,delete_message:checked(formData,'delete_second')},
+      third:{action:third,delete_message:checked(formData,'delete_third')},
+      fourth_plus:{action:fourthPlus,delete_message:checked(formData,'delete_fourth_plus')}
+    },repeat_window_days:days?Number(days):null,
     exempt_role_ids:[...new Set(formData.getAll('exempt_role_ids').map(String).filter(Boolean))],channel_ids:[...new Set(formData.getAll('channel_ids').map(String).filter(Boolean))]
   })}); revalidatePath('/settings/moderation');
 }

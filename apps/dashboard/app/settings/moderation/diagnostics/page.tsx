@@ -33,8 +33,9 @@ function detailSummary(row:Diagnostic){
   if(row.result_code==='case_created'){
     const offense=Number(d.offense_number||1);
     const action=String(d.recommended_action||'staff_review').replaceAll('_',' ');
+    const deleteMessage=Boolean(d.delete_message_recommended);
     const reason=String(d.ai_reason||'Detection passed all gates and created a moderation case.');
-    return `Offense #${offense} → ${action}. ${reason}`;
+    return `Offense #${offense} → ${action}${deleteMessage?' + delete message':''}. ${reason}`;
   }
   if(row.result_code==='skipped_mode_off') return 'Moderation mode was Off when this message was received.';
   if(row.result_code==='skipped_ai_unavailable') return 'AI classification was unavailable or disabled.';
