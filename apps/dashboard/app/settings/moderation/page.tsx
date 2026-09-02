@@ -42,13 +42,19 @@ export default async function ModerationSettingsPage(){
   const monitored=data.channels.filter(c=>c.monitor_messages&&c.mode!=='ignored');
   const canTakeActions=can(access,'moderation.actions');
   const canEnableLive=live.readiness.ready&&canTakeActions;
+  const modeLabel=live.effective_mode==='live'?'Live Enforcement':live.effective_mode==='observe'?'Observe Only':'Off';
+  const modeDescription=live.effective_mode==='live'
+    ? 'Saucin AI is actively enforcing the standard escalation ladder. Successful live actions automatically count toward future escalation.'
+    : live.effective_mode==='observe'
+      ? 'Saucin AI is detecting possible violations for staff review only. No Discord punishment is applied automatically.'
+      : 'Automated moderation detection and enforcement are currently disabled.';
 
   return <>
     <header className="pageHeader">
       <div>
         <p className="eyebrow">MODERATION</p>
         <h1>Moderation Settings</h1>
-        <p>Run Saucin AI in Observe Mode for review-only detection or enable Live Enforcement when Discord permissions and staff controls are ready.</p>
+        <p><strong>Current mode: {modeLabel}.</strong> {modeDescription}</p>
       </div>
       <div className={styles.headerActions}>
         <Link className="button" href="/settings/moderation/diagnostics">Diagnostics</Link>
@@ -56,10 +62,14 @@ export default async function ModerationSettingsPage(){
       </div>
     </header>
 
-    <div className={styles.info}><strong>v1.4 progression:</strong> Observe Mode requires staff confirmation. In Live Enforcement, a successful primary action automatically confirms the case and advances future escalation. Staff can dismiss an auto-confirmed case to correct the history.</div>
+    {live.effective_mode==='live'
+      ? <div className={styles.info}><strong>LIVE ENFORCEMENT ACTIVE:</strong> Successful reminders, warnings, and timeouts automatically confirm the case and advance future escalation. Staff can dismiss a case later to correct the history.</div>
+      : live.effective_mode==='observe'
+        ? <div className={styles.info}><strong>OBSERVE ONLY:</strong> Saucin AI detects possible violations but does not automatically punish members. A staff confirmation is required before a case counts toward escalation.</div>
+        : <div className={styles.info}><strong>MODERATION OFF:</strong> Saucin AI is not currently creating or enforcing moderation cases.</div>}
 
     <section className="panel settingsSection">
-      <div className="panelTitle"><div><h2>Global moderation</h2><p>Moderation only evaluates Discord channels already enabled for monitoring on the Channels page.</p></div><span className="badge">{live.effective_mode.toUpperCase()}</span></div>
+      <div className="panelTitle"><div><h2>Global moderation</h2><p>Moderation only evaluates Discord channels already enabled for monitoring on the Channels page.</p></div><span className="badge">{modeLabel.toUpperCase()}</span></div>
       <form action={saveModerationSettingsAction} className="knowledgeForm">
         <div className={styles.settingsGrid}>
           <label className="field"><span>Mode</span><select className="input select" name="mode" defaultValue={live.effective_mode}><option value="off">Off</option><option value="observe">Observe only</option><option value="live" disabled={!canEnableLive&&live.effective_mode!=='live'}>Live enforcement</option></select><small>{canTakeActions?(live.readiness.ready?'Live enforcement is available.':'Live is locked until the Discord permission check passes.'):'Your dashboard role does not have the Take Moderation Actions permission.'}</small></label>
