@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
-import { updateBotSettingsAction } from './actions';
+import DirectSettingsForm from '../../../components/DirectSettingsForm';
 
 type BotSettings = {
   direct_mentions_enabled: boolean;
@@ -52,7 +52,15 @@ export default async function BotSettingsPage() {
         </div>
       </div>
 
-      <form action={updateBotSettingsAction} className="botSettingsForm">
+      <DirectSettingsForm
+        operation="bot.update"
+        className="botSettingsForm"
+        idleLabel="Save bot behavior"
+        pendingLabel="Saving bot behavior…"
+        successMessage="Bot behavior saved."
+        actionsClassName="formActions botSettingsActions"
+        footer={<p>The bot still answers only from knowledge the asking member is authorized to access.</p>}
+      >
         <label className="settingToggleCard">
           <input type="checkbox" name="direct_mentions_enabled" defaultChecked={settings.direct_mentions_enabled} />
           <span><strong>Respond to direct mentions</strong><small>Allows members to ping the bot for verification, clarification, or an answer.</small></span>
@@ -86,12 +94,7 @@ export default async function BotSettingsPage() {
           <code>@Saucin AI what does the rule say here?</code>
           <code>Reply to a message → @Saucin AI clarify this</code>
         </div>
-
-        <div className="formActions botSettingsActions">
-          <p>The bot still answers only from knowledge the asking member is authorized to access.</p>
-          <button className="button primary" type="submit">Save bot behavior</button>
-        </div>
-      </form>
+      </DirectSettingsForm>
     </section>
   </>;
 }
