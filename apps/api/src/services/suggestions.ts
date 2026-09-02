@@ -14,6 +14,7 @@ const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) :
 
 export type SuggestionAutomationSettings = {
   forum_channel_id: string | null;
+  forum_tag_id: string | null;
   auto_create_forum_posts: boolean;
   collect_thread_details: boolean;
   ai_summarize_thread: boolean;
@@ -136,6 +137,7 @@ export async function getSuggestionAutomationSettings():Promise<SuggestionAutoma
   const row=result.rows[0]||{};
   return {
     forum_channel_id:row.forum_channel_id?String(row.forum_channel_id):null,
+    forum_tag_id:row.forum_tag_id?String(row.forum_tag_id):null,
     auto_create_forum_posts:row.auto_create_forum_posts!==false,
     collect_thread_details:row.collect_thread_details!==false,
     ai_summarize_thread:row.ai_summarize_thread!==false,
