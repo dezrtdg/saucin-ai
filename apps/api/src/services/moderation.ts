@@ -1,0 +1,593 @@
+import OpenAI from 'openai';
+import { z } from 'zod';
+import { db } from '../db.js';
+import { env } from '../env.js';
+
+const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
+
+export type ModerationSettings = {
+  mode: 'off' | 'observe';
+  minimum_confidence: number;
+  repeat_window_days: number;
+  audit_channel_id: string | null;
+  post_observations_to_audit: boolean;
+  exempt_role_ids: string[];
+  diagnostics_enabled: boolean;
+};
+
+export type ModerationAction = 'staff_review'|'reminder'|'warning'|'delete_message'|'timeout_10m'|'timeout_1h';
+
+export type ModerationActionLadder = {
+  first: ModerationAction;
+  second: ModerationAction;
+  third: ModerationAction;
+  fourth_plus: ModerationAction;
+};
+
+export type ModerationDetection = {
+  case_id: number;
+  public_id: string;
+  rule_title: string;
+  confidence: number;
+  reason: string;
+  evidence: string;
+  recommended_action: ModerationAction;
+  offense_number: number;
+  prior_confirmed_count: number;
+  repeat_window_days_used: number;
+  audit_channel_id: string | null;
+  post_to_audit: boolean;
+};
+
+type EligibleRule = {
+  id: number;
+  title: string;
+  body: string;
+  aliases: string[];
+  related_topics: string[];
+  example_questions: string[];
+  enabled: boolean;
+  minimum_confidence: number | null;
+  recommended_action: ModerationAction;
+  action_ladder: ModerationActionLadder;
+  repeat_window_days: number | null;
+  exempt_role_ids: string[];
+  channel_ids: string[];
+};
+
+const aiResultSchema = z.object({
+  matched: z.boolean(),
+  rule_id: z.coerce.number().int().positive().nullable().optional(),
+  confidence: z.coerce.number().min(0).max(1),
+  reason: z.string().max(1200).default(''),
+  evidence: z.string().max(500).default('')
+});
+
+function clamp(value:number,min:number,max:number){ return Math.max(min,Math.min(max,value)); }
+function unique(values:string[],max=100){ return [...new Set(values.map(v=>String(v).trim()).filter(Boolean))].slice(0,max); }
+
+const moderationActions:ModerationAction[]=['staff_review','reminder','warning','delete_message','timeout_10m','timeout_1h'];
+function moderationAction(value:unknown,fallback:ModerationAction='staff_review'):ModerationAction {
+  const candidate=String(value||'') as ModerationAction;
+  return moderationActions.includes(candidate)?candidate:fallback;
+}
+function normalizeActionLadder(value:unknown,fallbackValue:unknown='staff_review'):ModerationActionLadder {
+  const fallback=moderationAction(fallbackValue);
+  const raw=value && typeof value==='object' && !Array.isArray(value) ? value as Record<string,unknown> : {};
+  return {
+    first:moderationAction(raw.first,fallback),
+    second:moderationAction(raw.second,fallback),
+    third:moderationAction(raw.third,fallback),
+    fourth_plus:moderationAction(raw.fourth_plus,fallback)
+  };
+}
+function ladderAction(ladder:ModerationActionLadder,offenseNumber:number):ModerationAction {
+  if(offenseNumber<=1) return ladder.first;
+  if(offenseNumber===2) return ladder.second;
+  if(offenseNumber===3) return ladder.third;
+  return ladder.fourth_plus;
+}
+
+export async function getModerationSettings(): Promise<ModerationSettings> {
+  const result = await db.query('SELECT * FROM moderation_settings WHERE id=1');
+  const row = result.rows[0] || {};
+  return {
+    mode: row.mode === 'observe' ? 'observe' : 'off',
+    minimum_confidence: clamp(Number(row.minimum_confidence ?? 0.9),0,1),
+    repeat_window_days: clamp(Number(row.repeat_window_days ?? 7),1,90),
+    audit_channel_id: row.audit_channel_id ? String(row.audit_channel_id) : null,
+    post_observations_to_audit: Boolean(row.post_observations_to_audit),
+    exempt_role_ids: Array.isArray(row.exempt_role_ids) ? row.exempt_role_ids.map(String) : [],
+    diagnostics_enabled: Boolean(row.diagnostics_enabled)
+  };
+}
+
+export async function updateModerationSettings(input:{
+  mode:'off'|'observe'; minimum_confidence:number; repeat_window_days:number;
+  audit_channel_id?:string|null; post_observations_to_audit:boolean; exempt_role_ids:string[]; diagnostics_enabled:boolean;
+}) {
+  const result=await db.query(
+    `UPDATE moderation_settings SET mode=$1,minimum_confidence=$2,repeat_window_days=$3,audit_channel_id=$4,
+       post_observations_to_audit=$5,exempt_role_ids=$6,diagnostics_enabled=$7,updated_at=NOW() WHERE id=1 RETURNING *`,
+    [input.mode,clamp(input.minimum_confidence,0,1),clamp(input.repeat_window_days,1,90),input.audit_channel_id||null,input.post_observations_to_audit,unique(input.exempt_role_ids,100),input.diagnostics_enabled]
+  );
+  return result.rows[0];
+}
+
+export async function getModerationRuleSettings() {
+  const result=await db.query(`
+    SELECT a.id,a.title,a.status,a.content_type,a.category,a.updated_at,
+           COALESCE(rs.enabled,TRUE) AS moderation_enabled,
+           rs.minimum_confidence,COALESCE(rs.recommended_action,'staff_review') AS recommended_action,
+           rs.action_ladder,rs.repeat_window_days,COALESCE(rs.exempt_role_ids,'{}'::text[]) AS exempt_role_ids,
+           COALESCE(rs.channel_ids,'{}'::text[]) AS channel_ids
+      FROM knowledge_articles a
+      JOIN knowledge_content_types ct ON ct.key=a.content_type
+      LEFT JOIN moderation_rule_settings rs ON rs.article_id=a.id
+     WHERE a.status='published' AND ct.moderation_eligible=TRUE
+     ORDER BY a.title`);
+  return result.rows.map(row=>({
+    ...row,
+    action_ladder:normalizeActionLadder(row.action_ladder,row.recommended_action)
+  }));
+}
+
+export async function updateModerationRuleSettings(articleId:number,input:{
+  enabled:boolean; minimum_confidence:number|null; recommended_action:string; action_ladder:ModerationActionLadder; repeat_window_days:number|null;
+  exempt_role_ids:string[]; channel_ids:string[];
+}) {
+  const eligible=await db.query(`SELECT a.id FROM knowledge_articles a JOIN knowledge_content_types ct ON ct.key=a.content_type WHERE a.id=$1 AND a.status='published' AND ct.moderation_eligible=TRUE`,[articleId]);
+  if(!eligible.rowCount) throw new Error('Published moderation-eligible rule not found.');
+  const ladder=normalizeActionLadder(input.action_ladder,input.recommended_action);
+  const result=await db.query(`
+    INSERT INTO moderation_rule_settings (article_id,enabled,minimum_confidence,recommended_action,action_ladder,repeat_window_days,exempt_role_ids,channel_ids,updated_at)
+    VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,NOW())
+    ON CONFLICT (article_id) DO UPDATE SET enabled=EXCLUDED.enabled,minimum_confidence=EXCLUDED.minimum_confidence,
+      recommended_action=EXCLUDED.recommended_action,action_ladder=EXCLUDED.action_ladder,repeat_window_days=EXCLUDED.repeat_window_days,
+      exempt_role_ids=EXCLUDED.exempt_role_ids,channel_ids=EXCLUDED.channel_ids,updated_at=NOW()
+    RETURNING *`,
+    [articleId,input.enabled,input.minimum_confidence==null?null:clamp(input.minimum_confidence,0,1),ladder.first,JSON.stringify(ladder),
+     input.repeat_window_days==null?null:clamp(input.repeat_window_days,1,90),unique(input.exempt_role_ids),unique(input.channel_ids)]
+  );
+  return result.rows[0];
+}
+
+
+export type ModerationDiagnosticResult =
+  | 'case_created'
+  | 'skipped_channel_ignored'
+  | 'skipped_channel_not_monitored'
+  | 'skipped_issue_thread'
+  | 'skipped_mode_off'
+  | 'skipped_ai_unavailable'
+  | 'skipped_global_exempt'
+  | 'skipped_message_too_short'
+  | 'skipped_no_candidate_rules'
+  | 'skipped_no_eligible_rules'
+  | 'ai_no_match'
+  | 'ai_invalid_rule'
+  | 'below_confidence'
+  | 'duplicate_case'
+  | 'ai_error';
+
+type DiagnosticInput = {
+  source?: 'live'|'manual';
+  resultCode: ModerationDiagnosticResult;
+  guildId?: string|null;
+  channelId?: string|null;
+  channelName?: string|null;
+  discordMessageId?: string|null;
+  discordUserId?: string|null;
+  authorName?: string|null;
+  content?: string|null;
+  matchedRuleId?: number|null;
+  matchedRuleTitle?: string|null;
+  confidence?: number|null;
+  threshold?: number|null;
+  details?: Record<string,unknown>;
+};
+
+async function insertModerationDiagnostic(input:DiagnosticInput) {
+  await db.query(`
+    INSERT INTO moderation_diagnostics
+      (source,result_code,guild_id,channel_id,channel_name,discord_message_id,discord_user_id,author_name,message_content,
+       matched_rule_id,matched_rule_title,confidence,threshold,details)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)`,[
+      input.source||'live',input.resultCode,input.guildId||null,input.channelId||null,input.channelName||null,
+      input.discordMessageId||null,input.discordUserId||null,input.authorName||null,String(input.content||'').slice(0,4000),
+      input.matchedRuleId||null,input.matchedRuleTitle||null,
+      input.confidence==null?null:clamp(Number(input.confidence),0,1),
+      input.threshold==null?null:clamp(Number(input.threshold),0,1),
+      JSON.stringify(input.details||{})
+    ]);
+  // Diagnostics are intentionally temporary/tuning data. Retain only the newest 1,000 rows.
+  await db.query(`DELETE FROM moderation_diagnostics WHERE id IN (
+    SELECT id FROM moderation_diagnostics ORDER BY id DESC OFFSET 1000
+  )`).catch(()=>undefined);
+}
+
+async function diagnostic(settings:ModerationSettings,input:DiagnosticInput) {
+  if(!settings.diagnostics_enabled) return;
+  await insertModerationDiagnostic(input).catch(error=>console.warn('[moderation] unable to store diagnostic',error));
+}
+
+export async function recordModerationIngressDiagnostic(input:Omit<DiagnosticInput,'source'>) {
+  const settings=await getModerationSettings();
+  if(!settings.diagnostics_enabled) return;
+  await diagnostic(settings,{...input,source:'live'});
+}
+
+export async function listModerationDiagnostics(limit=100) {
+  const safeLimit=clamp(Number(limit||100),1,300);
+  const result=await db.query(`
+    SELECT d.*,
+      CASE d.result_code
+        WHEN 'case_created' THEN 'Case created'
+        WHEN 'skipped_channel_ignored' THEN 'Channel ignored'
+        WHEN 'skipped_channel_not_monitored' THEN 'Channel not monitored'
+        WHEN 'skipped_issue_thread' THEN 'Issue thread'
+        WHEN 'skipped_mode_off' THEN 'Moderation off'
+        WHEN 'skipped_ai_unavailable' THEN 'AI unavailable'
+        WHEN 'skipped_global_exempt' THEN 'Global exempt role'
+        WHEN 'skipped_message_too_short' THEN 'Message too short'
+        WHEN 'skipped_no_candidate_rules' THEN 'No moderation rules'
+        WHEN 'skipped_no_eligible_rules' THEN 'No eligible rules'
+        WHEN 'ai_no_match' THEN 'AI no match'
+        WHEN 'ai_invalid_rule' THEN 'AI chose invalid rule'
+        WHEN 'below_confidence' THEN 'Below confidence'
+        WHEN 'duplicate_case' THEN 'Duplicate case'
+        WHEN 'ai_error' THEN 'AI error'
+        ELSE d.result_code
+      END AS result_label
+    FROM moderation_diagnostics d
+    ORDER BY d.created_at DESC
+    LIMIT $1`,[safeLimit]);
+  return result.rows;
+}
+
+export async function clearModerationDiagnostics() {
+  const result=await db.query('DELETE FROM moderation_diagnostics');
+  return { deleted: result.rowCount||0 };
+}
+
+async function createModerationQueryEmbedding(message:string):Promise<number[]|null> {
+  if(!client || !env.AI_ENABLED || !message.trim()) return null;
+  try {
+    const response=await client.embeddings.create({
+      model:env.AI_EMBEDDING_MODEL,
+      input:message.slice(0,8000),
+      encoding_format:'float'
+    });
+    return response.data[0]?.embedding??null;
+  } catch(error) {
+    console.warn('[moderation] candidate embedding failed; falling back to lexical retrieval',error);
+    return null;
+  }
+}
+
+async function candidateRules(message:string):Promise<EligibleRule[]> {
+  // When the enabled moderation rule set is reasonably small, send ALL eligible rules
+  // to the classifier. This is the safest option and prevents a strong violation from
+  // being missed merely because its exact insult/phrase was not present in the rule's
+  // title or aliases.
+  const countResult=await db.query(`
+    SELECT count(*)::int AS count
+      FROM knowledge_articles a
+      JOIN knowledge_content_types ct ON ct.key=a.content_type
+      LEFT JOIN moderation_rule_settings rs ON rs.article_id=a.id
+     WHERE a.status='published'
+       AND ct.moderation_eligible=TRUE
+       AND COALESCE(rs.enabled,TRUE)=TRUE`);
+  const enabledCount=Number(countResult.rows[0]?.count||0);
+
+  const baseSelect=`
+    SELECT a.id,a.title,a.body,a.aliases,a.related_topics,a.example_questions,
+           COALESCE(rs.enabled,TRUE) AS enabled,rs.minimum_confidence,
+           COALESCE(rs.recommended_action,'staff_review') AS recommended_action,rs.action_ladder,rs.repeat_window_days,
+           COALESCE(rs.exempt_role_ids,'{}'::text[]) AS exempt_role_ids,
+           COALESCE(rs.channel_ids,'{}'::text[]) AS channel_ids`;
+
+  const baseFrom=`
+      FROM knowledge_articles a
+      JOIN knowledge_content_types ct ON ct.key=a.content_type
+      LEFT JOIN moderation_rule_settings rs ON rs.article_id=a.id
+     WHERE a.status='published'
+       AND ct.moderation_eligible=TRUE
+       AND COALESCE(rs.enabled,TRUE)=TRUE`;
+
+  let rows:any[]=[];
+
+  if(enabledCount<=30){
+    const result=await db.query(`${baseSelect} ${baseFrom} ORDER BY a.updated_at DESC,a.id DESC LIMIT 30`);
+    rows=result.rows;
+  } else {
+    // Larger rule sets use hybrid retrieval. Semantic similarity is especially
+    // important for moderation because abusive wording frequently does not share
+    // literal words with formal rule language ("worthless piece of shit" vs.
+    // "targeted personal harassment").
+    const queryText=message.slice(0,4000);
+    const embedding=await createModerationQueryEmbedding(queryText);
+    const params:any[]=[queryText];
+
+    let semanticSelect='NULL::float AS semantic_score';
+    if(embedding){
+      params.push(JSON.stringify(embedding));
+      semanticSelect=`CASE WHEN a.embedding IS NULL THEN NULL
+        ELSE GREATEST(-1.0,LEAST(1.0,1-(a.embedding <=> $2::vector))) END::float AS semantic_score`;
+    }
+
+    const result=await db.query(`
+      ${baseSelect},
+       ts_rank_cd(
+         setweight(to_tsvector('english',coalesce(a.title,'')),'A') ||
+         setweight(to_tsvector('english',coalesce(a.body,'')),'B') ||
+         setweight(to_tsvector('english',coalesce(array_to_string(a.aliases,' '),'')),'A') ||
+         setweight(to_tsvector('english',coalesce(array_to_string(a.related_topics,' '),'')),'A') ||
+         setweight(to_tsvector('english',coalesce(array_to_string(a.example_questions,' '),'')),'A'),
+         plainto_tsquery('english',$1)
+       )::float AS lexical_rank,
+       GREATEST(
+         similarity(lower(coalesce(a.title,'')),lower($1)),
+         similarity(lower(coalesce(array_to_string(a.aliases,' '),'')),lower($1)),
+         similarity(lower(coalesce(array_to_string(a.related_topics,' '),'')),lower($1)),
+         similarity(lower(coalesce(array_to_string(a.example_questions,' '),'')),lower($1)),
+         similarity(lower(coalesce(a.body,'')),lower($1))
+       )::float AS fuzzy_rank,
+       ${semanticSelect}
+      ${baseFrom}
+      ORDER BY a.updated_at DESC
+      LIMIT 250`,params);
+
+    rows=result.rows
+      .map(row=>{
+        const lexical=Math.max(0,Number(row.lexical_rank||0));
+        const lexicalNorm=Math.min(1,lexical*3.5);
+        const fuzzy=Math.max(0,Math.min(1,Number(row.fuzzy_rank||0)));
+        const semantic=row.semantic_score==null?0:Math.max(0,Math.min(1,Number(row.semantic_score)));
+        const score=embedding
+          ? semantic*0.62 + lexicalNorm*0.23 + fuzzy*0.15
+          : lexicalNorm*0.72 + fuzzy*0.28;
+        return {...row,_candidate_score:score};
+      })
+      .sort((a,b)=>Number(b._candidate_score)-Number(a._candidate_score))
+      .slice(0,30);
+  }
+
+  return rows.map(row=>({
+    id:Number(row.id),title:String(row.title),body:String(row.body),aliases:row.aliases||[],related_topics:row.related_topics||[],example_questions:row.example_questions||[],
+    enabled:Boolean(row.enabled),minimum_confidence:row.minimum_confidence==null?null:Number(row.minimum_confidence),
+    recommended_action:moderationAction(row.recommended_action),
+    action_ladder:normalizeActionLadder(row.action_ladder,row.recommended_action),
+    repeat_window_days:row.repeat_window_days==null?null:Number(row.repeat_window_days),exempt_role_ids:row.exempt_role_ids||[],channel_ids:row.channel_ids||[]
+  }));
+}
+async function recentContext(channelId:string,storedMessageId:number){
+  const result=await db.query(`SELECT author_name,content FROM discord_messages WHERE channel_id=$1 AND id<$2 AND is_bot=FALSE ORDER BY discord_created_at DESC LIMIT 5`,[channelId,storedMessageId]);
+  return result.rows.reverse().map(row=>`${String(row.author_name||'member').slice(0,80)}: ${String(row.content||'').replace(/\s+/g,' ').slice(0,500)}`).join('\n');
+}
+
+function rulesPrompt(rules:EligibleRule[]) {
+  return rules.map(rule=>[
+    `RULE_ID: ${rule.id}`,
+    `TITLE: ${rule.title}`,
+    `VERIFIED RULE: ${rule.body.slice(0,1100)}`,
+    rule.aliases.length?`ALIASES: ${rule.aliases.slice(0,20).join(', ')}`:'',
+    rule.related_topics.length?`RELATED: ${rule.related_topics.slice(0,8).join(', ')}`:'',
+    rule.example_questions.length?`EXAMPLES: ${rule.example_questions.slice(0,8).join(' | ')}`:''
+  ].filter(Boolean).join('\n')).join('\n\n---\n\n');
+}
+
+export async function processModerationMessage(input:{
+  storedMessageId:number; guildId:string; channelId:string; channelName?:string|null; discordMessageId:string;
+  discordUserId:string; authorName:string; content:string; memberRoleIds:string[];
+}):Promise<ModerationDetection|null> {
+  const settings=await getModerationSettings();
+  const baseDiag={
+    guildId:input.guildId,channelId:input.channelId,channelName:input.channelName||null,
+    discordMessageId:input.discordMessageId,discordUserId:input.discordUserId,authorName:input.authorName,content:input.content
+  };
+
+  if(settings.mode!=='observe'){
+    await diagnostic(settings,{...baseDiag,resultCode:'skipped_mode_off',details:{mode:settings.mode}});
+    return null;
+  }
+  if(!client || !env.AI_ENABLED){
+    await diagnostic(settings,{...baseDiag,resultCode:'skipped_ai_unavailable',details:{client_available:Boolean(client),ai_enabled:Boolean(env.AI_ENABLED)}});
+    return null;
+  }
+
+  const globalExemptMatches=settings.exempt_role_ids.filter(role=>input.memberRoleIds.includes(role));
+  if(globalExemptMatches.length){
+    await diagnostic(settings,{...baseDiag,resultCode:'skipped_global_exempt',details:{member_role_ids:input.memberRoleIds,matched_exempt_role_ids:globalExemptMatches}});
+    return null;
+  }
+
+  if(input.content.trim().length<2){
+    await diagnostic(settings,{...baseDiag,resultCode:'skipped_message_too_short'});
+    return null;
+  }
+
+  const candidates=await candidateRules(input.content);
+  if(!candidates.length){
+    await diagnostic(settings,{...baseDiag,resultCode:'skipped_no_candidate_rules'});
+    return null;
+  }
+
+  const ruleExemptions=candidates.filter(rule=>rule.exempt_role_ids.some(role=>input.memberRoleIds.includes(role)));
+  const channelExcluded=candidates.filter(rule=>rule.channel_ids.length && !rule.channel_ids.includes(input.channelId));
+  const rules=candidates.filter(rule=>
+    !rule.exempt_role_ids.some(role=>input.memberRoleIds.includes(role)) &&
+    (!rule.channel_ids.length || rule.channel_ids.includes(input.channelId))
+  );
+
+  if(!rules.length){
+    await diagnostic(settings,{...baseDiag,resultCode:'skipped_no_eligible_rules',details:{
+      candidate_rules:candidates.map(rule=>({id:rule.id,title:rule.title})),
+      role_exempted_rules:ruleExemptions.map(rule=>({id:rule.id,title:rule.title})),
+      channel_excluded_rules:channelExcluded.map(rule=>({id:rule.id,title:rule.title,channel_ids:rule.channel_ids})),
+      member_role_ids:input.memberRoleIds
+    }});
+    return null;
+  }
+
+  const context=await recentContext(input.channelId,input.storedMessageId);
+
+  let parsed:z.infer<typeof aiResultSchema>;
+  try {
+    const response=await client.responses.create({
+      model:env.AI_CLASSIFIER_MODEL,
+      reasoning:{effort:'low'},
+      instructions:`You are an OBSERVE-ONLY Discord moderation classifier for ${env.SERVER_NAME}. Determine whether the TARGET MESSAGE itself is a likely violation of one of the supplied VERIFIED DISCORD RULES. Context exists only to disambiguate the target. Do not invent rules, thresholds, exceptions, punishments, or facts that are not supported by the supplied rules.
+
+MATCHING RULES:
+- Match only when the target message's conduct is materially supported as prohibited by a supplied verified rule.
+- Do NOT flag a message merely because it mentions prohibited behavior, quotes someone, asks what a rule means, reports another player's behavior, discusses moderation, or contains ordinary profanity with no applicable rule violation.
+- Direct insults, targeted abusive language, harassment, or hostility SHOULD match when a supplied verified rule prohibits harassment, personal abuse, targeted insults, toxicity, disrespectful conduct, or equivalent behavior.
+- A profanity word by itself is not enough. Targeting and the verified rule matter.
+- If context clearly shows quoting, reporting, joking/banter, or another benign explanation, reduce confidence or return matched=false.
+
+CONFIDENCE CALIBRATION:
+Confidence measures how strongly the TARGET MESSAGE fits the VERIFIED RULE, not how severe or offensive the language feels.
+- 0.95-0.99 = explicit, unmistakable violation with essentially no plausible benign interpretation.
+- 0.88-0.94 = clear violation: direct/targeted conduct closely matches the verified rule; context does not materially undermine it.
+- 0.76-0.87 = likely violation but some context, wording, targeting, or rule-fit ambiguity remains.
+- 0.60-0.75 = borderline/ambiguous; normally do not create a case at a 0.75+ threshold unless the evidence truly supports it.
+- below 0.60 = weak support; normally matched=false.
+For a rule that explicitly prohibits harassment/personal abuse/targeted insults, a message directly addressed at a person such as "you're a stupid ass bitch" is ordinarily a CLEAR HIGH-CONFIDENCE match (about 0.90+) unless context shows it is quoting, reporting, consensual banter, or otherwise non-abusive.
+
+Return ONLY compact JSON:
+{"matched":boolean,"rule_id":number|null,"confidence":number,"reason":string,"evidence":string}
+
+confidence must be 0-1. evidence should quote or concisely identify the specific target-message wording that supports the match. reason should explain the rule-to-message fit, not moralize. If the evidence does not support a verified violation, use matched=false.`,
+      input:`RECENT CONTEXT (may be empty):\n${context||'(none)'}\n\nTARGET MESSAGE (${input.authorName}):\n${input.content.slice(0,4000)}\n\nVERIFIED DISCORD RULES:\n${rulesPrompt(rules)}`,
+      max_output_tokens:900
+    });
+    const raw=response.output_text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+    parsed=aiResultSchema.parse(JSON.parse(raw));
+  } catch(error) {
+    console.error('[moderation] AI observe classification failed',error);
+    await diagnostic(settings,{...baseDiag,resultCode:'ai_error',details:{error:error instanceof Error?error.message:String(error),eligible_rules:rules.map(rule=>({id:rule.id,title:rule.title}))}});
+    return null;
+  }
+
+  if(!parsed.matched || !parsed.rule_id){
+    await diagnostic(settings,{...baseDiag,resultCode:'ai_no_match',confidence:parsed.confidence,details:{
+      ai_reason:parsed.reason,ai_evidence:parsed.evidence,ai_rule_id:parsed.rule_id||null,
+      eligible_rules:rules.map(rule=>({id:rule.id,title:rule.title}))
+    }});
+    return null;
+  }
+
+  const rule=rules.find(item=>item.id===Number(parsed.rule_id));
+  if(!rule){
+    await diagnostic(settings,{...baseDiag,resultCode:'ai_invalid_rule',confidence:parsed.confidence,details:{
+      ai_rule_id:parsed.rule_id,ai_reason:parsed.reason,eligible_rules:rules.map(item=>({id:item.id,title:item.title}))
+    }});
+    return null;
+  }
+
+  const threshold=rule.minimum_confidence==null?settings.minimum_confidence:clamp(rule.minimum_confidence,0,1);
+  const confidence=clamp(Number(parsed.confidence),0,1);
+  if(confidence<threshold){
+    await diagnostic(settings,{...baseDiag,resultCode:'below_confidence',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence,threshold,details:{
+      ai_reason:parsed.reason,ai_evidence:parsed.evidence,threshold_source:rule.minimum_confidence==null?'global':'rule_override'
+    }});
+    return null;
+  }
+
+  const repeatDays=rule.repeat_window_days==null?settings.repeat_window_days:clamp(rule.repeat_window_days,1,90);
+  const prior=await db.query(`SELECT count(*)::int AS count FROM moderation_cases WHERE discord_user_id=$1 AND status='confirmed' AND rule_article_id=$2 AND created_at>NOW()-($3::text||' days')::interval`,[input.discordUserId,rule.id,repeatDays]);
+  const priorCount=Number(prior.rows[0]?.count||0);
+  const offenseNumber=priorCount+1;
+  const ladder=normalizeActionLadder(rule.action_ladder,rule.recommended_action);
+  const recommendedAction=ladderAction(ladder,offenseNumber);
+
+  const inserted=await db.query(`
+    INSERT INTO moderation_cases
+      (guild_id,channel_id,channel_name,message_id,discord_message_id,discord_user_id,author_name,message_content,
+       rule_article_id,rule_title,confidence,ai_reason,evidence,recommended_action,prior_confirmed_count,offense_number,
+       repeat_window_days_used,action_ladder_snapshot,mode,status)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,'observe','pending')
+    ON CONFLICT (discord_message_id) DO NOTHING
+    RETURNING id`,[
+      input.guildId,input.channelId,input.channelName||null,input.discordMessageId,input.storedMessageId,input.discordUserId,input.authorName,input.content,
+      rule.id,rule.title,confidence,String(parsed.reason||'').slice(0,1200),String(parsed.evidence||'').slice(0,500),recommendedAction,priorCount,
+      offenseNumber,repeatDays,JSON.stringify(ladder)
+    ]);
+
+  if(!inserted.rowCount){
+    await diagnostic(settings,{...baseDiag,resultCode:'duplicate_case',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence,threshold});
+    return null;
+  }
+
+  const caseId=Number(inserted.rows[0].id);
+  const publicId=`MOD-${String(caseId).padStart(4,'0')}`;
+  await db.query('UPDATE moderation_cases SET public_id=$1 WHERE id=$2',[publicId,caseId]);
+  await db.query(`INSERT INTO moderation_case_events (case_id,event_type,details) VALUES ($1,'detected',$2::jsonb)`,[caseId,JSON.stringify({
+    confidence,rule_id:rule.id,mode:'observe',prior_confirmed_count:priorCount,offense_number:offenseNumber,
+    repeat_window_days:repeatDays,recommended_action:recommendedAction,action_ladder:ladder
+  })]);
+
+  await diagnostic(settings,{...baseDiag,resultCode:'case_created',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence,threshold,details:{
+    public_id:publicId,recommended_action:recommendedAction,prior_confirmed_count:priorCount,offense_number:offenseNumber,
+    repeat_window_days:repeatDays,action_ladder:ladder,ai_reason:parsed.reason,ai_evidence:parsed.evidence
+  }});
+
+  return {
+    case_id:caseId,public_id:publicId,rule_title:rule.title,confidence,reason:String(parsed.reason||''),evidence:String(parsed.evidence||''),
+    recommended_action:recommendedAction,offense_number:offenseNumber,prior_confirmed_count:priorCount,repeat_window_days_used:repeatDays,
+    audit_channel_id:settings.audit_channel_id,post_to_audit:settings.post_observations_to_audit
+  };
+}
+
+export async function listModerationCases(input:{status?:string;userId?:string;limit?:number}={}) {
+  const values:any[]=[]; const where:string[]=[];
+  if(input.status && ['pending','confirmed','dismissed'].includes(input.status)){values.push(input.status);where.push(`c.status=$${values.length}`);}
+  if(input.userId){values.push(input.userId);where.push(`c.discord_user_id=$${values.length}`);}
+  values.push(clamp(Number(input.limit||200),1,500));
+  const result=await db.query(`
+    SELECT c.* FROM moderation_cases c
+    ${where.length?'WHERE '+where.join(' AND '):''}
+    ORDER BY CASE c.status WHEN 'pending' THEN 1 WHEN 'confirmed' THEN 2 ELSE 3 END,c.created_at DESC
+    LIMIT $${values.length}`,values);
+  const stats=await db.query(`SELECT
+    count(*) FILTER (WHERE status='pending')::int AS pending,
+    count(*) FILTER (WHERE status='confirmed' AND created_at>NOW()-INTERVAL '30 days')::int AS confirmed_30d,
+    count(*) FILTER (WHERE status='dismissed' AND created_at>NOW()-INTERVAL '30 days')::int AS dismissed_30d,
+    count(*) FILTER (WHERE created_at>NOW()-INTERVAL '24 hours')::int AS detected_24h
+    FROM moderation_cases`);
+  return {stats:stats.rows[0],cases:result.rows};
+}
+
+export async function getModerationCase(caseId:number){
+  const result=await db.query(`SELECT c.*,
+    COALESCE((SELECT jsonb_agg(e ORDER BY e.created_at DESC) FROM moderation_case_events e WHERE e.case_id=c.id),'[]'::jsonb) AS events,
+    (SELECT count(*)::int FROM moderation_cases u WHERE u.discord_user_id=c.discord_user_id AND u.status='confirmed') AS user_confirmed_total,
+    (SELECT count(*)::int FROM moderation_cases u WHERE u.discord_user_id=c.discord_user_id AND u.status='dismissed') AS user_dismissed_total
+    FROM moderation_cases c WHERE c.id=$1`,[caseId]);
+  return result.rows[0]||null;
+}
+
+export async function reviewModerationCase(caseId:number,input:{status:'pending'|'confirmed'|'dismissed';notes?:string|null;actorUserId?:string|null}){
+  const before=await db.query('SELECT status FROM moderation_cases WHERE id=$1',[caseId]);
+  if(!before.rowCount) return null;
+  const result=await db.query(`UPDATE moderation_cases SET status=$1,review_notes=$2,reviewed_by_user_id=$3,
+    reviewed_at=CASE WHEN $1='pending' THEN NULL ELSE NOW() END,updated_at=NOW() WHERE id=$4 RETURNING *`,
+    [input.status,input.notes?.trim()||null,input.status==='pending'?null:(input.actorUserId||null),caseId]);
+  const oldStatus=String(before.rows[0].status);
+  const eventType=input.status==='pending'?'reopened':input.status;
+  await db.query(`INSERT INTO moderation_case_events (case_id,event_type,actor_user_id,details) VALUES ($1,$2,$3,$4::jsonb)`,
+    [caseId,eventType,input.actorUserId||null,JSON.stringify({from:oldStatus,to:input.status,notes:input.notes?.trim()||null})]);
+  return result.rows[0];
+}
+
+export async function getModerationUserHistory(userId:string){
+  const cases=await db.query(`SELECT * FROM moderation_cases WHERE discord_user_id=$1 ORDER BY created_at DESC LIMIT 200`,[userId]);
+  const summary=await db.query(`SELECT count(*)::int AS total,
+    count(*) FILTER (WHERE status='pending')::int AS pending,
+    count(*) FILTER (WHERE status='confirmed')::int AS confirmed,
+    count(*) FILTER (WHERE status='dismissed')::int AS dismissed,
+    max(author_name) AS last_known_name
+    FROM moderation_cases WHERE discord_user_id=$1`,[userId]);
+  return {user_id:userId,summary:summary.rows[0],cases:cases.rows};
+}

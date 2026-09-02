@@ -1,0 +1,103 @@
+name: saucin-ai
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg18-bookworm
+    container_name: saucin-ai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - /mnt/user/appdata/saucin-ai/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - saucin-ai
+
+  redis:
+    image: redis:8-alpine
+    container_name: saucin-ai-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - /mnt/user/appdata/saucin-ai/redis:/data
+    networks:
+      - saucin-ai
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: saucin-ai-api
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME}
+      TZ: ${TZ}
+      PORT: "3100"
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      DASHBOARD_API_KEY: ${DASHBOARD_API_KEY}
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      DEFAULT_CHANNEL_MODE: ${DEFAULT_CHANNEL_MODE}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AI_CLASSIFIER_MODEL: ${AI_CLASSIFIER_MODEL}
+      AI_REPLY_MODEL: ${AI_REPLY_MODEL}
+      AI_EMBEDDING_MODEL: ${AI_EMBEDDING_MODEL}
+      AI_ENABLED: ${AI_ENABLED}
+      AI_REPLY_CONFIDENCE: ${AI_REPLY_CONFIDENCE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    expose:
+      - "3100"
+    networks:
+      - saucin-ai
+
+  dashboard:
+    build:
+      context: ./apps/dashboard
+      dockerfile: Dockerfile
+    container_name: saucin-ai-dashboard
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME}
+      TZ: ${TZ}
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+      API_INTERNAL_URL: ${API_INTERNAL_URL}
+      DASHBOARD_API_KEY: ${DASHBOARD_API_KEY}
+      DASHBOARD_AUTH_REQUIRED: ${DASHBOARD_AUTH_REQUIRED}
+      DASHBOARD_PUBLIC_URL: ${DASHBOARD_PUBLIC_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      DASHBOARD_ALLOWED_USER_IDS: ${DASHBOARD_ALLOWED_USER_IDS}
+      DASHBOARD_ALLOWED_ROLE_IDS: ${DASHBOARD_ALLOWED_ROLE_IDS}
+    depends_on:
+      api:
+        condition: service_started
+    expose:
+      - "3000"
+    networks:
+      - saucin-ai
+      - cloudflare-saucin
+
+networks:
+  saucin-ai:
+    name: saucin-ai
+    driver: bridge
+
+  cloudflare-saucin:
+    external: true
+    name: cloudflare-saucin

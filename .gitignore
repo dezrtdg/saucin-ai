@@ -1,0 +1,43 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+
+# Archives / patches
+*.zip
+*.tar
+*.tar.gz
+
+# Runtime/local data
+postgres/
+redis/
+data/
+
+# Local Docker overrides
+docker-compose.override.yml
