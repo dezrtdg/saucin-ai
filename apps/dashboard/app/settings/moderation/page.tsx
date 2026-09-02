@@ -4,7 +4,7 @@ import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
 import PendingActionButton from '../../../components/PendingActionButton';
 import ModerationRuleForm from '../../../components/ModerationRuleForm';
-import { saveModerationRuleAction, saveModerationSettingsAction } from './actions';
+import { saveModerationSettingsAction } from './actions';
 import styles from '../../moderation/moderation.module.css';
 
 type Role={id:string;name:string;color:string};
@@ -101,7 +101,7 @@ export default async function ModerationSettingsPage(){
       {data.rules.length?data.rules.map(rule=><details className={styles.ruleConfig} key={rule.id}>
         <summary><strong>{rule.title}</strong><span>{rule.moderation_enabled?'Enabled':'Disabled'} · {rule.minimum_confidence==null?'global confidence':`${Math.round(Number(rule.minimum_confidence)*100)}%`} · standard ladder</span></summary>
         <div className={styles.ruleBody}>
-          <ModerationRuleForm action={saveModerationRuleAction.bind(null,String(rule.id))}>
+          <ModerationRuleForm articleId={String(rule.id)}>
             <div className={styles.settingsGrid}>
               <label className="settingToggleCard"><input type="checkbox" name="enabled" defaultChecked={rule.moderation_enabled}/><span><strong>Detect this rule</strong><small>Disabled rules are not considered by moderation AI.</small></span></label>
               <label className="field"><span>Confidence override</span><input className="input" type="number" min="0.50" max="0.99" step="0.01" name="minimum_confidence" defaultValue={rule.minimum_confidence==null?'':Number(rule.minimum_confidence).toFixed(2)} placeholder={String(s.minimum_confidence)}/><small>Blank uses the global threshold.</small></label>
