@@ -147,11 +147,11 @@ export default async function ChannelsPage() {
         <div className="panelTitle"><div><h2>Mode behavior</h2><p>Ignored is the safe default for every newly discovered channel.</p></div></div>
         <div className="table">
           <div className="tr"><strong>ignored</strong><span>Do not store or process messages, including direct mentions.</span><span></span><span></span></div>
-          <div className="tr"><strong>monitor</strong><span>Store and classify messages; never reply unless directly mentioned and mention override is enabled.</span><span></span><span></span></div>
-          <div className="tr"><strong>questions</strong><span>Answer verified questions from approved knowledge.</span><span></span><span></span></div>
-          <div className="tr"><strong>issues</strong><span>Detect and respond to matching known issues.</span><span></span><span></span></div>
-          <div className="tr"><strong>suggestions</strong><span>Detect suggestions silently for staff review.</span><span></span><span></span></div>
-          <div className="tr"><strong>full</strong><span>Questions, issues, and suggestions.</span><span></span><span></span></div>
+          <div className="tr"><strong>monitor</strong><span>Store and classify messages; never reply unless directly mentioned and mention override is enabled. Suggestions are still collected silently.</span><span></span><span></span></div>
+          <div className="tr"><strong>questions</strong><span>Answer verified questions from approved knowledge. Other detected support signals can still be collected without a reply.</span><span></span><span></span></div>
+          <div className="tr"><strong>issues</strong><span>Detect and respond to matching known issues. Suggestions can still be collected silently.</span><span></span><span></span></div>
+          <div className="tr"><strong>suggestions</strong><span>Detect community ideas, cluster duplicates, count supporters, and acknowledge the suggestion with a support button.</span><span></span><span></span></div>
+          <div className="tr"><strong>full</strong><span>Questions, issues, and suggestions are all handled with their normal response behavior.</span><span></span><span></span></div>
         </div>
       </section>
     </>
