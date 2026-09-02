@@ -55,6 +55,7 @@ export async function POST(request:Request){
       case 'suggestions.automation.update':
         await call('/api/suggestions/settings',{method:'PUT',body:JSON.stringify({
           forum_channel_id:value(formData,'forum_channel_id')||null,
+          forum_tag_id:value(formData,'forum_tag_id')||null,
           auto_create_forum_posts:checked(formData,'auto_create_forum_posts'),
           collect_thread_details:checked(formData,'collect_thread_details'),
           ai_summarize_thread:checked(formData,'ai_summarize_thread'),
