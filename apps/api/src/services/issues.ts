@@ -295,6 +295,72 @@ export async function confirmIssueCandidate(candidateId: number, discordUserId: 
   }
 }
 
+export async function dismissIssueCandidate(candidateId:number,discordUserId:string){
+  const candidate=await db.query('SELECT * FROM issue_candidates WHERE id=$1',[candidateId]);
+  if(!candidate.rowCount) return null;
+  const row=candidate.rows[0];
+  await db.query(`
+    INSERT INTO issue_candidate_confirmations (candidate_id,discord_user_id,confirmation_type)
+    VALUES ($1,$2,'ignored') ON CONFLICT (candidate_id,discord_user_id) DO NOTHING`,[candidateId,discordUserId]);
+  if(String(row.discord_user_id||'')===discordUserId&&Number(row.confirmed_count||0)===0&&Number(row.occurrence_count||1)<=1){
+    const dismissed=await db.query(`UPDATE issue_candidates SET status='dismissed',updated_at=NOW() WHERE id=$1 RETURNING *`,[candidateId]);
+    return dismissed.rows[0]||row;
+  }
+  return row;
+}
+
+export async function promoteConfirmedIssueCandidate(candidateId:number){
+  const initial=await db.query('SELECT * FROM issue_candidates WHERE id=$1',[candidateId]);
+  if(!initial.rowCount) return null;
+  if(initial.rows[0].matched_issue_id) return getIssue(Number(initial.rows[0].matched_issue_id));
+
+  const categories=await db.query('SELECT key,label,description FROM issue_categories WHERE enabled=TRUE ORDER BY sort_order,label');
+  const categoryKeys=categories.rows.map(row=>String(row.key));
+  const fallbackCategory=categoryKeys.includes('general')?'general':categoryKeys[0]||'general';
+  const sourceText=String(initial.rows[0].sample_text||'').trim();
+  let draft:IssueDraftSuggestion={
+    title:String(initial.rows[0].topic||sourceText||'Player-reported issue').replace(/\s+/g,' ').slice(0,200),
+    description:sourceText.slice(0,12000),category:fallbackCategory,resource_name:'',severity:'medium',
+    aliases:unique(initial.rows[0].related_terms||[],100),symptoms:sourceText?[sourceText.slice(0,400)]:[],
+    log_patterns:[],workaround:'',staff_notes:'',authoring_note:'AI organization was unavailable; staff should review this automatically created issue.'
+  };
+  try{
+    draft=await buildIssueDraft({sourceText,categories:categories.rows,categoryHint:fallbackCategory});
+  }catch(error){
+    console.warn('[issues] AI issue promotion fallback used',error);
+  }
+
+  const clientDb=await db.connect();
+  let issueId:number;
+  try{
+    await clientDb.query('BEGIN');
+    const locked=await clientDb.query('SELECT * FROM issue_candidates WHERE id=$1 FOR UPDATE',[candidateId]);
+    if(!locked.rowCount){await clientDb.query('ROLLBACK');return null;}
+    if(locked.rows[0].matched_issue_id){
+      issueId=Number(locked.rows[0].matched_issue_id);
+      await clientDb.query('COMMIT');
+      return getIssue(issueId);
+    }
+    const created=await clientDb.query(`
+      INSERT INTO issues
+        (title,description,category,resource_name,severity,status,staff_notes,aliases,symptoms,log_patterns,report_count,first_seen,last_seen)
+      VALUES ($1,$2,$3,$4,$5,'new',$6,$7,$8,$9,0,$10,$11) RETURNING id`,[
+      draft.title,draft.description,draft.category,draft.resource_name||null,draft.severity,
+      [draft.staff_notes,draft.authoring_note].filter(Boolean).join('\n\n')||null,
+      draft.aliases,draft.symptoms,draft.log_patterns,locked.rows[0].first_seen,locked.rows[0].last_seen
+    ]);
+    issueId=Number(created.rows[0].id);
+    await clientDb.query('UPDATE issues SET public_id=$1 WHERE id=$2',[`BUG-${String(issueId).padStart(4,'0')}`,issueId]);
+    await clientDb.query(`UPDATE issue_candidates SET status='promoted',matched_issue_id=$1,updated_at=NOW() WHERE id=$2`,[issueId,candidateId]);
+    await clientDb.query('COMMIT');
+  }catch(error){
+    await clientDb.query('ROLLBACK');
+    throw error;
+  }finally{clientDb.release();}
+  const linked=await linkCandidateToIssue(candidateId,issueId);
+  return linked.issue;
+}
+
 export async function linkCandidateToIssue(candidateId: number, issueId: number) {
   const clientDb = await db.connect();
   let insertedReports = 0;

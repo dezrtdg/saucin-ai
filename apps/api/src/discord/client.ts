@@ -29,7 +29,7 @@ import {
   recordKnowledgeGap,
   searchKnowledge
 } from '../services/knowledge.js';
-import { addIssueReport, confirmIssueCandidate, findKnownIssue, getIssue, getIssueAutomationSettings, getIssuePublicMessage, processIssueThreadMessage, recordIssueCandidate } from '../services/issues.js';
+import { addIssueReport, confirmIssueCandidate, dismissIssueCandidate, findKnownIssue, getIssue, getIssueAutomationSettings, getIssuePublicMessage, processIssueThreadMessage, promoteConfirmedIssueCandidate, recordIssueCandidate } from '../services/issues.js';
 import {
   addSuggestionSupport,
   dismissSuggestionCandidate,
@@ -112,10 +112,21 @@ function knownIssueButtons(issueId: number, threadId?: string | null) {
   return [row];
 }
 
-function candidateButtons(candidateId: number) {
+function issueConfirmationButtons(issueId:number,submitterId:string,threadId?:string|null){
+  const row=new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`issue:report:${issueId}:${submitterId}`).setLabel('Report this issue').setEmoji('🐛').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`issue:ignore:${issueId}:${submitterId}`).setLabel('Ignore issue').setStyle(ButtonStyle.Secondary)
+  );
+  if(threadId&&env.DISCORD_GUILD_ID) row.addComponents(
+    new ButtonBuilder().setLabel('View known issue').setStyle(ButtonStyle.Link).setURL(`https://discord.com/channels/${env.DISCORD_GUILD_ID}/${threadId}`)
+  );
+  return [row];
+}
+
+function candidateButtons(candidateId:number,submitterId:string) {
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`candidate:report:${candidateId}`).setLabel('Report this issue').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`candidate:same:${candidateId}`).setLabel("I'm having this too").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`candidate:report:${candidateId}:${submitterId}`).setLabel('Report this issue').setEmoji('🐛').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`candidate:ignore:${candidateId}:${submitterId}`).setLabel('Ignore issue').setStyle(ButtonStyle.Secondary)
   )];
 }
 
@@ -1360,18 +1371,14 @@ async function handleMessage(message: Message) {
       relatedTopics: classification.relatedTopics
     });
     if (issue) {
-      const added = await addIssueReport(issue.id, storedId, message.author.id, message.content);
       matchedSources = [{
         type: 'issue', id: issue.public_id ?? issue.id, title: issue.title, status: issue.status,
         score: Number(issue.score.toFixed(4)), matchTypes: issue.match_types
       }];
       if (issueReplyAllowed || mentionOverride) {
-        await ensureIssueDiscordThread(issue.id).catch(error => console.warn('[issues] unable to create Discord issue ticket', error));
         const currentIssue = await getIssue(issue.id);
-        const counted = added ? `\n\nI added your report to the affected-player count.` : '';
-        responseText = `${await getIssuePublicMessage(currentIssue || issue)}${counted}`;
-        responseComponents = knownIssueButtons(issue.id, currentIssue?.discord_thread_id || null);
-        await syncIssueDiscordPost(issue.id).catch(() => null);
+        responseText = `${await getIssuePublicMessage(currentIssue || issue)}\n\nThis looks like it may match what you described. Want me to add your report?`;
+        responseComponents = issueConfirmationButtons(issue.id,message.author.id,currentIssue?.discord_thread_id||null);
       }
     } else {
       const candidate = await recordIssueCandidate({
@@ -1385,8 +1392,8 @@ async function handleMessage(message: Message) {
       });
       matchedSources = [{ type: 'issue_candidate', id: candidate.id, status: candidate.status, occurrences: candidate.occurrence_count }];
       if (issueReplyAllowed || mentionOverride) {
-        responseText = `I don't see an existing known issue that clearly matches this yet. I logged it as a possible new issue for staff to review instead of guessing. If you want staff to track it as a report, use the button below.`;
-        responseComponents = candidateButtons(Number(candidate.id));
+        responseText = `I don’t see a known issue that clearly matches this yet. If you confirm it, I’ll organize the report and open a dedicated issue discussion for details, screenshots, links, and anyone else having the same problem. 🐛`;
+        responseComponents = candidateButtons(Number(candidate.id),message.author.id);
       }
     }
   }
@@ -1803,15 +1810,63 @@ export async function startDiscord() {
       return;
     }
 
-    if (parts[0] === 'candidate' && (parts[1] === 'report' || parts[1] === 'same')) {
+    if(parts[0]==='issue'&&parts[1]==='ignore'){
+      void (async()=>{
+        const submitterId=parts[3]||'';
+        if(submitterId&&interaction.user.id!==submitterId) return interaction.reply({content:'This decision belongs to the person who reported the problem.',ephemeral:true});
+        await interaction.deferUpdate();
+        await interaction.message.delete().catch(async()=>{
+          await interaction.editReply({content:'Got it — I’ll leave this one alone. 🤐',components:[],allowedMentions:{parse:[]}});
+        });
+      })().catch(error=>console.error('[discord] known issue ignore failed',error));
+      return;
+    }
+
+    if(parts[0]==='issue'&&parts[1]==='report'){
+      void (async()=>{
+        const submitterId=parts[3]||'';
+        if(submitterId&&interaction.user.id!==submitterId) return interaction.reply({content:'This decision belongs to the person who reported the problem.',ephemeral:true});
+        const issue=await getIssue(id);
+        if(!issue) return interaction.reply({content:'That issue is no longer available.',ephemeral:true});
+        await interaction.deferUpdate();
+        const added=await addIssueReport(id,null,interaction.user.id,'Confirmed from an automatic Discord issue detection.','discord_confirmation');
+        const threadId=await ensureIssueDiscordThread(id).catch(error=>{console.warn('[issues] unable to create confirmed issue discussion',error);return null;});
+        await syncIssueDiscordPost(id).catch(()=>null);
+        await interaction.editReply({
+          content:added?`Now we’re debugging 🐛 Your report was added to **${issue.public_id||`BUG-${id}`}**.`:`You’re already counted on **${issue.public_id||`BUG-${id}`}**.`,
+          components:knownIssueButtons(id,threadId||issue.discord_thread_id||null),allowedMentions:{parse:[]}
+        });
+      })().catch(error=>console.error('[discord] known issue confirmation failed',error));
+      return;
+    }
+
+    if(parts[0]==='candidate'&&parts[1]==='ignore'){
+      void (async()=>{
+        const submitterId=parts[3]||'';
+        if(submitterId&&interaction.user.id!==submitterId) return interaction.reply({content:'This decision belongs to the person who reported the problem.',ephemeral:true});
+        await interaction.deferUpdate();
+        await dismissIssueCandidate(id,interaction.user.id).catch(error=>console.warn('[issues] unable to dismiss issue candidate',error));
+        await interaction.message.delete().catch(async()=>{
+          await interaction.editReply({content:'Got it — I’ll leave this one alone. 🤐',components:[],allowedMentions:{parse:[]}});
+        });
+      })().catch(error=>console.error('[discord] candidate ignore failed',error));
+      return;
+    }
+
+    if (parts[0] === 'candidate' && parts[1] === 'report') {
       void (async () => {
-        const result = await confirmIssueCandidate(id, interaction.user.id, parts[1]);
-        if (!result.candidate) return interaction.reply({ content: 'That possible issue is no longer available.', ephemeral: true });
-        return interaction.reply({
-          content: result.inserted
-            ? 'Thanks — staff can now see your confirmation on this possible issue.'
-            : 'Your confirmation was already recorded for this possible issue.',
-          ephemeral: true
+        const submitterId=parts[3]||'';
+        if(submitterId&&interaction.user.id!==submitterId) return interaction.reply({content:'This decision belongs to the person who reported the problem.',ephemeral:true});
+        await interaction.deferUpdate();
+        const result = await confirmIssueCandidate(id, interaction.user.id, 'report');
+        if (!result.candidate) return interaction.editReply({ content: 'That possible issue is no longer available.', components: [] });
+        const issue=await promoteConfirmedIssueCandidate(id);
+        if(!issue) return interaction.editReply({content:'I saved the report, but couldn’t create its issue record yet. Staff can still see it in the dashboard.',components:[]});
+        const threadId=await ensureIssueDiscordThread(Number(issue.id)).catch(error=>{console.warn('[issues] unable to publish confirmed issue discussion',error);return null;});
+        await syncIssueDiscordPost(Number(issue.id)).catch(()=>null);
+        return interaction.editReply({
+          content:`Now we’re debugging 🐛 I created **${issue.public_id||`BUG-${issue.id}`} · ${issue.title}**.${threadId?' Add the details, screenshots, clips, or links in its discussion so we can narrow this down.':' Staff can see it in the dashboard; the Discord issue destination still needs to be configured.'}`,
+          components:knownIssueButtons(Number(issue.id),threadId),allowedMentions:{parse:[]}
         });
       })().catch(error => console.error('[discord] candidate button failed', error));
       return;
