@@ -4,7 +4,7 @@ import { api } from '../../../lib/api';
 import { can,getDashboardAccess } from '../../../lib/permissions';
 import DirectSettingsForm from '../../../components/DirectSettingsForm';
 
-type Settings={enabled:boolean;panel_channel_id:string|null;panel_message_id:string|null;open_category_id:string|null;closed_category_id:string|null;transcript_channel_id:string|null;max_open_per_user:number;allow_user_close:boolean;warning_role_ids:string[];timeout_role_ids:string[];kick_role_ids:string[];ban_role_ids:string[];reversal_role_ids:string[]};
+type Settings={enabled:boolean;panel_channel_id:string|null;panel_message_id:string|null;open_category_id:string|null;closed_category_id:string|null;transcript_channel_id:string|null;max_open_per_user:number;allow_user_close:boolean;hide_staff_mentions:boolean;delete_closed_channels:boolean;warning_role_ids:string[];timeout_role_ids:string[];kick_role_ids:string[];ban_role_ids:string[];reversal_role_ids:string[]};
 type TicketType={key:string;label:string;description:string;emoji:string|null;intake_prompt:string;support_role_ids:string[];category_override_id:string|null;allow_punishments:boolean;enabled:boolean;sort_order:number};
 type Role={id:string;name:string;color:string;position:number};
 type TextChannel={id:string;name:string;category_id:string|null;category_name:string|null};
@@ -32,6 +32,8 @@ export default async function TicketSettingsPage(){
           <label className="field"><span>Maximum open tickets per member</span><input className="input" name="max_open_per_user" type="number" min="1" max="10" defaultValue={s.max_open_per_user}/></label>
           <label className="settingToggleCard"><input name="enabled" type="checkbox" defaultChecked={s.enabled}/><span><strong>Ticket creation enabled</strong><small>Allow members to use the published panel.</small></span></label>
           <label className="settingToggleCard"><input name="allow_user_close" type="checkbox" defaultChecked={s.allow_user_close}/><span><strong>Allow members to close their own tickets</strong><small>Staff can always close tickets assigned to their routing role.</small></span></label>
+          <label className="settingToggleCard"><input name="hide_staff_mentions" type="checkbox" defaultChecked={s.hide_staff_mentions}/><span><strong>Hide routed staff role names</strong><small>Staff roles are still notified, but their mentions are concealed behind Discord spoiler blocks.</small></span></label>
+          <label className="settingToggleCard"><input name="delete_closed_channels" type="checkbox" defaultChecked={s.delete_closed_channels}/><span><strong>Delete Discord channel when closed</strong><small>The complete case stays in the dashboard and authorized staff can reopen it into a new private channel.</small></span></label>
         </div>
         <div className="settingsSubsection"><h3>Discord punishment authority</h3><p>These role lists limit what staff can apply from Discord ticket buttons. When a list is blank, any staff role assigned to that ticket type may use that action.</p></div>
         <div className="formGrid">

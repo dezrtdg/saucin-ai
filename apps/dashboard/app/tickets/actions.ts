@@ -12,6 +12,13 @@ export async function updateTicketStatusAction(ticketId:string,status:'open'|'cl
   });
 }
 
+export async function reopenTicketAction(ticketId:string){
+  return runDashboardAction({fallbackPath:`/tickets/${ticketId}`,successMessage:'Ticket reopened in a new private Discord channel.'},async()=>{
+    await api(`/api/tickets/${ticketId}/reopen`,{method:'POST',body:'{}'});
+    revalidatePath('/tickets');revalidatePath(`/tickets/${ticketId}`);return null;
+  });
+}
+
 export async function issuePunishmentAction(ticketId:string,formData:FormData){
   const action=value(formData,'action');
   const duration=Number(value(formData,'duration_seconds')||0)||null;

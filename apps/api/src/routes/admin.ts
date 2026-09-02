@@ -3,13 +3,13 @@ import { z } from 'zod';
 import { ChannelType } from 'discord.js';
 import { db } from '../db.js';
 import { env } from '../env.js';
-import { applyTicketPunishment, discord, ensureIssueDiscordThread, getCachedDiscordChannelMetadata, postIssueStatusUpdate, publishTicketPanel, recoverDiscordConversationContext, reverseTicketPunishment, syncDiscordChannels, syncIssueDiscordPost } from '../discord/client.js';
+import { applyTicketPunishment, discord, ensureIssueDiscordThread, getCachedDiscordChannelMetadata, postIssueStatusUpdate, publishTicketPanel, recoverDiscordConversationContext, reopenDiscordTicket, reverseTicketPunishment, syncDiscordChannels, syncIssueDiscordPost } from '../discord/client.js';
 import { invalidateBotBehaviorSettingsCache } from '../services/botSettings.js';
 import { backfillKnowledgeEmbeddings, buildKnowledgeDraft, deriveKnowledgeGapQuestion, improveKnowledgeRetrieval, refreshKnowledgeEmbedding } from '../services/knowledge.js';
 import { buildIssueDraft, linkCandidateToIssue, refreshIssueEmbedding, setIssueObservationStatus } from '../services/issues.js';
 import { allPermissionKeys, parseDashboardIdentity, permissionCatalog, permissionSnapshot, permissionSystemConfigured, rolePermissionMapForDisplay, saveRolePermissions } from '../services/permissions.js';
 import { clearModerationDiagnostics, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
-import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
+import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, releaseTicket, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -73,6 +73,7 @@ function routeRequirement(method: string, route: string): string[] | null {
     'GET /api/tickets': ['tickets.view'],
     'GET /api/tickets/:id': ['tickets.view'],
     'PUT /api/tickets/:id/status': ['tickets.manage'],
+    'POST /api/tickets/:id/reopen': ['tickets.manage'],
     'GET /api/tickets/settings': ['settings.tickets.manage'],
     'PUT /api/tickets/settings': ['settings.tickets.manage'],
     'PUT /api/tickets/types/:key': ['settings.tickets.manage'],
@@ -370,9 +371,20 @@ export async function adminRoutes(app: FastifyInstance) {
       const body=z.object({status:z.enum(['open','claimed','awaiting_user']),note:z.string().trim().max(1000).optional()}).parse(request.body);
       const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
       const actor={userId:identity.userId||'dashboard',name:'Dashboard staff'};
-      const updated=body.status==='claimed'?await claimTicket(params.id,actor):await setTicketStatus(params.id,body.status,actor,body.note);
+      const updated=body.status==='claimed'
+        ?await claimTicket(params.id,actor)
+        :body.status==='open'
+          ?await releaseTicket(params.id,actor,body.note)
+          :await setTicketStatus(params.id,body.status,actor,body.note);
       if(!updated) return reply.code(404).send({error:'ticket not found or already closed'});
       return updated;
+    });
+
+    admin.post('/api/tickets/:id/reopen', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      try{return await reopenDiscordTicket(params.id,{userId:identity.userId||'dashboard',name:'Dashboard staff'});}
+      catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'unable to reopen ticket'});}
     });
 
     admin.get('/api/tickets/settings', async () => {
@@ -387,7 +399,7 @@ export async function adminRoutes(app: FastifyInstance) {
         enabled:z.boolean(),panel_channel_id:z.string().trim().max(64).nullable().optional(),
         open_category_id:z.string().trim().max(64).nullable().optional(),closed_category_id:z.string().trim().max(64).nullable().optional(),
         transcript_channel_id:z.string().trim().max(64).nullable().optional(),max_open_per_user:z.coerce.number().int().min(1).max(10),
-        allow_user_close:z.boolean(),warning_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
+        allow_user_close:z.boolean(),hide_staff_mentions:z.boolean(),delete_closed_channels:z.boolean(),warning_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
         timeout_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
         kick_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
         ban_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
@@ -396,7 +408,8 @@ export async function adminRoutes(app: FastifyInstance) {
       return updateTicketSettings({
         enabled:body.enabled,panel_channel_id:body.panel_channel_id||null,open_category_id:body.open_category_id||null,
         closed_category_id:body.closed_category_id||null,transcript_channel_id:body.transcript_channel_id||null,
-        max_open_per_user:body.max_open_per_user,allow_user_close:body.allow_user_close,
+        max_open_per_user:body.max_open_per_user,allow_user_close:body.allow_user_close,hide_staff_mentions:body.hide_staff_mentions,
+        delete_closed_channels:body.delete_closed_channels,
         warning_role_ids:body.warning_role_ids,timeout_role_ids:body.timeout_role_ids,kick_role_ids:body.kick_role_ids,
         ban_role_ids:body.ban_role_ids,reversal_role_ids:body.reversal_role_ids
       });

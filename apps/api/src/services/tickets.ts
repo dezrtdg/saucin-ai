@@ -12,6 +12,8 @@ export type TicketSettings = {
   transcript_channel_id:string|null;
   max_open_per_user:number;
   allow_user_close:boolean;
+  hide_staff_mentions:boolean;
+  delete_closed_channels:boolean;
   warning_role_ids:string[];
   timeout_role_ids:string[];
   kick_role_ids:string[];
@@ -48,6 +50,8 @@ export async function getTicketSettings():Promise<TicketSettings>{
     transcript_channel_id:row.transcript_channel_id?String(row.transcript_channel_id):null,
     max_open_per_user:Math.max(1,Math.min(10,Number(row.max_open_per_user||2))),
     allow_user_close:row.allow_user_close!==false,
+    hide_staff_mentions:row.hide_staff_mentions!==false,
+    delete_closed_channels:Boolean(row.delete_closed_channels),
     warning_role_ids:Array.isArray(row.warning_role_ids)?row.warning_role_ids.map(String):[],
     timeout_role_ids:Array.isArray(row.timeout_role_ids)?row.timeout_role_ids.map(String):[],
     kick_role_ids:Array.isArray(row.kick_role_ids)?row.kick_role_ids.map(String):[],
@@ -61,11 +65,11 @@ export async function updateTicketSettings(input:Omit<TicketSettings,'panel_mess
     UPDATE ticket_settings
        SET enabled=$1,panel_channel_id=$2,open_category_id=$3,closed_category_id=$4,
            transcript_channel_id=$5,max_open_per_user=$6,allow_user_close=$7,
-           warning_role_ids=$8,timeout_role_ids=$9,kick_role_ids=$10,ban_role_ids=$11,reversal_role_ids=$12,updated_at=NOW()
+           hide_staff_mentions=$8,delete_closed_channels=$9,warning_role_ids=$10,timeout_role_ids=$11,kick_role_ids=$12,ban_role_ids=$13,reversal_role_ids=$14,updated_at=NOW()
      WHERE id=1 RETURNING *`,[
     input.enabled,input.panel_channel_id||null,input.open_category_id||null,input.closed_category_id||null,
     input.transcript_channel_id||null,Math.max(1,Math.min(10,input.max_open_per_user)),input.allow_user_close,
-    unique(input.warning_role_ids),unique(input.timeout_role_ids),unique(input.kick_role_ids),unique(input.ban_role_ids),unique(input.reversal_role_ids)
+    input.hide_staff_mentions,input.delete_closed_channels,unique(input.warning_role_ids),unique(input.timeout_role_ids),unique(input.kick_role_ids),unique(input.ban_role_ids),unique(input.reversal_role_ids)
   ]);
   return result.rows[0];
 }
@@ -160,7 +164,7 @@ export async function getTicketByChannel(channelId:string){
 export async function getTicket(id:number){
   const result=await db.query(`
     SELECT t.*,tt.label AS type_label,tt.description AS type_description,tt.support_role_ids,
-           tt.allow_punishments,tt.emoji AS type_emoji,
+           tt.allow_punishments,tt.emoji AS type_emoji,tt.category_override_id,
            COALESCE((SELECT jsonb_agg(e ORDER BY e.created_at DESC) FROM ticket_events e WHERE e.ticket_id=t.id),'[]'::jsonb) AS events,
            COALESCE((SELECT jsonb_agg(m ORDER BY m.discord_created_at ASC) FROM (
              SELECT id,discord_message_id,discord_user_id,author_name,content,attachments,is_bot,discord_created_at
@@ -215,6 +219,39 @@ export async function claimTicket(id:number,actor:{userId:string;name:string}){
     UPDATE tickets SET status='claimed',claimed_by_user_id=$1,claimed_by_name=$2,claimed_at=NOW(),updated_at=NOW()
      WHERE id=$3 AND status IN ('open','claimed','awaiting_user') RETURNING *`,[actor.userId,actor.name,id]);
   if(result.rowCount) await addTicketEvent(id,'claimed',actor.userId,actor.name);
+  return result.rows[0]||null;
+}
+
+export async function releaseTicket(id:number,actor:{userId:string;name:string},note?:string){
+  const current=await db.query(`SELECT claimed_by_user_id,claimed_by_name FROM tickets WHERE id=$1`,[id]);
+  const previous=current.rows[0]||{};
+  const result=await db.query(`
+    UPDATE tickets
+       SET status='open',claimed_by_user_id=NULL,claimed_by_name=NULL,claimed_at=NULL,updated_at=NOW()
+     WHERE id=$1 AND status IN ('open','claimed','awaiting_user') RETURNING *`,[id]);
+  if(result.rowCount) await addTicketEvent(id,'released',actor.userId,actor.name,{
+    previous_claimed_by_user_id:previous.claimed_by_user_id||null,
+    previous_claimed_by_name:previous.claimed_by_name||null,
+    note:note||null
+  });
+  return result.rows[0]||null;
+}
+
+export async function reopenTicketRecord(id:number,channelId:string,controlMessageId:string,actor:{userId:string;name:string}){
+  const result=await db.query(`
+    UPDATE tickets
+       SET status='open',channel_id=$1,control_message_id=$2,
+           claimed_by_user_id=NULL,claimed_by_name=NULL,claimed_at=NULL,updated_at=NOW()
+     WHERE id=$3 AND status='closed' RETURNING *`,[channelId,controlMessageId,id]);
+  if(result.rowCount) await addTicketEvent(id,'reopened',actor.userId,actor.name,{channel_id:channelId});
+  return result.rows[0]||null;
+}
+
+export async function markTicketChannelDeleted(id:number,channelId:string){
+  const result=await db.query(`
+    UPDATE tickets SET channel_id=NULL,control_message_id=NULL,updated_at=NOW()
+     WHERE id=$1 AND channel_id=$2 RETURNING *`,[id,channelId]);
+  if(result.rowCount) await addTicketEvent(id,'discord_channel_deleted',null,'Saucin AI',{channel_id:channelId});
   return result.rows[0]||null;
 }
 

@@ -59,6 +59,9 @@ import {
   listTicketTypes,
   markPunishmentFailed,
   markPunishmentReversed,
+  markTicketChannelDeleted,
+  releaseTicket,
+  reopenTicketRecord,
   saveTicketMessage,
   setTicketPanelMessage,
   setTicketStatus,
@@ -706,6 +709,7 @@ function ticketPanelComponents(types:Awaited<ReturnType<typeof listTicketTypes>>
 function ticketControlComponents(ticket:any){
   const first=new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`ticket:claim:${ticket.id}`).setLabel('Claim ticket').setEmoji('🙋').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`ticket:release:${ticket.id}`).setLabel('Release').setEmoji('↩️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`ticket:waiting:${ticket.id}`).setLabel('Waiting on user').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`ticket:close:${ticket.id}`).setLabel('Close ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
   );
@@ -850,7 +854,7 @@ async function createPrivateTicketChannel(interaction:any,typeKey:string,input:{
       permissionOverwrites:overwrites,
       reason:`Saucin AI private ticket ${record.public_id}`
     });
-    const supportMentions=type.support_role_ids.map(id=>`<@&${id}>`).join(' ');
+    const supportMentions=type.support_role_ids.map(id=>settings.hide_staff_mentions?`||<@&${id}>||`:`<@&${id}>`).join(' ');
     let intro=[
       `${type.emoji||'🎫'} **${record.public_id} · ${type.label}**`,
       `**Opened by:** <@${interaction.user.id}>`,
@@ -862,7 +866,7 @@ async function createPrivateTicketChannel(interaction:any,typeKey:string,input:{
       '',
       `**What happens next:** ${type.intake_prompt||'Add any details that will help staff understand the request.'}`,
       '',
-      supportMentions?`${supportMentions}\nA new ticket is ready for review.`:'Staff can claim this ticket when they begin reviewing it.'
+      supportMentions?`${supportMentions}\nThe staff team has been notified. A new ticket is ready for review.`:'Staff can claim this ticket when they begin reviewing it.'
     ].filter(Boolean).join('\n');
     if(appealedPunishment){
       intro+=`\n\n**Linked punishment:** ${appealedPunishment.public_id} · ${punishmentLabel(appealedPunishment.action_type,appealedPunishment.duration_seconds)}\n**Original reason:** ${appealedPunishment.reason}`;
@@ -914,7 +918,7 @@ async function createPunishmentAppealTicket(interaction:any,punishment:any,input
       permissionOverwrites:overwrites,reason:`Saucin AI punishment appeal ${punishment.public_id}`
     });
     const memberStillPresent=await guild.members.fetch(interaction.user.id).catch(()=>null);
-    const supportMentions=type.support_role_ids.map(id=>`<@&${id}>`).join(' ');
+    const supportMentions=type.support_role_ids.map(id=>settings.hide_staff_mentions?`||<@&${id}>||`:`<@&${id}>`).join(' ');
     const control=await channel.send({
       content:[
         `⚖️ **${record.public_id} · Appeal of ${punishment.public_id}**`,
@@ -934,6 +938,56 @@ async function createPunishmentAppealTicket(interaction:any,punishment:any,input
     await activateTicket(Number(record.id),channel.id,control.id);
     return {...record,status:'open',channel_id:channel.id,existing:false,member_can_access:Boolean(memberStillPresent)};
   }catch(error){await failTicketCreation(Number(record.id),cleanDiscordError(error));throw error;}
+}
+
+export async function reopenDiscordTicket(ticketId:number,actor:{userId:string;name:string}){
+  if(!discord.isReady()) throw new Error('Discord is not connected yet.');
+  const [settings,ticket]=await Promise.all([getTicketSettings(),getTicket(ticketId)]);
+  if(!ticket) throw new Error('That ticket no longer exists.');
+  if(ticket.status!=='closed') throw new Error(`${ticket.public_id} is not closed.`);
+  const guild=discord.guilds.cache.get(String(ticket.guild_id));
+  if(!guild) throw new Error('The Discord server is unavailable.');
+  const categoryId=ticket.category_override_id||settings.open_category_id;
+  if(!categoryId) throw new Error('Staff have not configured an open-ticket category.');
+  const botId=discord.user?.id;
+  if(!botId) throw new Error('Saucin AI is not connected.');
+  const opener=await guild.members.fetch(String(ticket.opener_user_id)).catch(()=>null);
+  const overwrites:any[]=[
+    {id:guild.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]},
+    {id:botId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageChannels,PermissionFlagsBits.ManageMessages,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]}
+  ];
+  if(opener) overwrites.push({id:ticket.opener_user_id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]});
+  for(const roleId of ticket.support_role_ids||[]){
+    overwrites.push({id:roleId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]});
+  }
+  const channel=await guild.channels.create({
+    name:ticketChannelName(ticket.public_id,ticket.subject),type:ChannelType.GuildText,parent:categoryId,
+    permissionOverwrites:overwrites,reason:`Reopened ${ticket.public_id} by ${actor.name}`
+  });
+  try{
+    const supportMentions=(ticket.support_role_ids||[]).map((id:string)=>settings.hide_staff_mentions?`||<@&${id}>||`:`<@&${id}>`).join(' ');
+    const control=await channel.send({
+      content:[
+        `🔓 **${ticket.public_id} reopened**`,
+        `**Reopened by:** ${actor.name}`,
+        `**Opened for:** <@${ticket.opener_user_id}>`,
+        `**Subject:** ${ticket.subject}`,
+        ticket.close_reason?`**Previous closing reason:** ${ticket.close_reason}`:'',
+        '',
+        'This is the continuation of the original ticket. Its earlier conversation and audit history remain preserved in the dashboard.',
+        opener?'Add any new details here so staff can continue the review.':'The original member is no longer in the server, so this channel is available to staff only.',
+        supportMentions?`\n${supportMentions}\nThe staff team has been notified.`:''
+      ].filter(Boolean).join('\n').slice(0,1950),
+      components:ticketControlComponents(ticket),
+      allowedMentions:{roles:ticket.support_role_ids||[],users:opener?[ticket.opener_user_id]:[]}
+    });
+    const reopened=await reopenTicketRecord(ticketId,channel.id,control.id,actor);
+    if(!reopened) throw new Error('The ticket changed while it was being reopened.');
+    return {...reopened,channel_id:channel.id};
+  }catch(error){
+    await channel.delete('Reopen failed; removing incomplete ticket channel.').catch(()=>null);
+    throw error;
+  }
 }
 
 async function captureTicketMessage(message:Message,ticket:any){
@@ -969,9 +1023,14 @@ async function closeDiscordTicket(ticketId:number,interaction:any,reason:string)
     const channel=await discord.channels.fetch(String(ticket.channel_id)).catch(()=>null) as any;
     if(channel&&channel.type===ChannelType.GuildText){
       await channel.send({content:`🔒 **Ticket closed by ${actor.name}.**\n**Reason:** ${reason}\n\nThe complete transcript has been preserved.`,allowedMentions:{parse:[]}}).catch(()=>null);
-      await channel.permissionOverwrites.edit(ticket.opener_user_id,{SendMessages:false}).catch(()=>null);
-      if(settings.closed_category_id) await channel.setParent(settings.closed_category_id,{lockPermissions:false,reason:`Closed ${ticket.public_id}`}).catch(()=>null);
-      await channel.setName(`closed-${String(ticket.public_id).toLowerCase()}`).catch(()=>null);
+      if(settings.delete_closed_channels){
+        const deleted=await channel.delete(`Closed ${ticket.public_id}; transcript preserved by Saucin AI`).then(()=>true).catch(()=>false);
+        if(deleted) await markTicketChannelDeleted(ticketId,String(ticket.channel_id));
+      }else{
+        await channel.permissionOverwrites.edit(ticket.opener_user_id,{SendMessages:false}).catch(()=>null);
+        if(settings.closed_category_id) await channel.setParent(settings.closed_category_id,{lockPermissions:false,reason:`Closed ${ticket.public_id}`}).catch(()=>null);
+        await channel.setName(`closed-${String(ticket.public_id).toLowerCase()}`).catch(()=>null);
+      }
     }
   }
   return closed;
@@ -1541,7 +1600,9 @@ export async function startDiscord() {
         await interaction.deferReply({ephemeral:true});
         try{
           await closeDiscordTicket(ticketId,interaction,interaction.fields.getTextInputValue('reason'));
-          return interaction.editReply({content:`${ticket.public_id} is closed and its transcript was preserved.`});
+          return interaction.editReply({content:settings.delete_closed_channels
+            ?`${ticket.public_id} is closed, its Discord channel was removed, and its full history was preserved in the dashboard.`
+            :`${ticket.public_id} is closed and its transcript was preserved.`});
         }catch(error){return interaction.editReply({content:`I couldn’t close the ticket: ${cleanDiscordError(error)}`});}
       })().catch(error=>console.error('[tickets] close submission failed',error));
       return;
@@ -1649,6 +1710,19 @@ export async function startDiscord() {
         await claimTicket(id,actor);
         await interaction.reply({content:`🙋 **${actor.name} claimed ${ticket.public_id}.**`,allowedMentions:{parse:[]}});
       })().catch(error=>console.error('[tickets] claim failed',error));
+      return;
+    }
+
+    if(parts[0]==='ticket'&&parts[1]==='release'){
+      void (async()=>{
+        const ticket=await getTicket(id);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        if(!(await interactionCanManageTicket(interaction,ticket))) return interaction.reply({content:'Only the assigned staff team can release this ticket.',ephemeral:true});
+        if(ticket.status==='open'&&!ticket.claimed_by_user_id) return interaction.reply({content:`${ticket.public_id} is already unclaimed and available to the staff team.`,ephemeral:true});
+        const actor=ticketActor(interaction);
+        await releaseTicket(id,actor);
+        await interaction.reply({content:`↩️ **${actor.name} released ${ticket.public_id} back to the open queue.** Another staff member can claim it.`,allowedMentions:{parse:[]}});
+      })().catch(error=>console.error('[tickets] release failed',error));
       return;
     }
 

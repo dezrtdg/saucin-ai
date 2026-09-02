@@ -73,6 +73,8 @@ export async function POST(request:Request){
           transcript_channel_id:value(formData,'transcript_channel_id')||null,
           max_open_per_user:Math.max(1,Math.min(10,integer(formData,'max_open_per_user',2))),
           allow_user_close:checked(formData,'allow_user_close'),
+          hide_staff_mentions:checked(formData,'hide_staff_mentions'),
+          delete_closed_channels:checked(formData,'delete_closed_channels'),
           warning_role_ids:unique(formData,'warning_role_ids'),timeout_role_ids:unique(formData,'timeout_role_ids'),
           kick_role_ids:unique(formData,'kick_role_ids'),ban_role_ids:unique(formData,'ban_role_ids'),
           reversal_role_ids:unique(formData,'reversal_role_ids')
