@@ -5,8 +5,10 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 type FeedbackState={kind:'loading'|'success'|'error';message:string}|null;
 type ViewSnapshot={url:string;scrollY:number;openPanels:string[]};
+type ActionStateDetail={pending:boolean;message?:string};
 
 const VIEW_KEY='saucin-dashboard-action-view';
+const ACTION_STATE_EVENT='saucin-dashboard-action-state';
 
 function cleanUrl(url:URL){
   url.searchParams.delete('_ux');
@@ -56,23 +58,6 @@ function restoreView(){
   }catch{
     sessionStorage.removeItem(VIEW_KEY);
   }
-}
-
-function pendingLabel(button:HTMLElement|null){
-  const override=button?.getAttribute('data-pending-label')?.trim();
-  if(override) return override;
-  const label=(button?.textContent||'').replace(/\s+/g,' ').trim().toLowerCase();
-  if(/reanaly|analy|improve|ai/.test(label)) return 'Analyzing…';
-  if(/refresh|sync/.test(label)) return 'Refreshing…';
-  if(/publish/.test(label)) return 'Publishing…';
-  if(/save/.test(label)) return 'Saving…';
-  if(/update|edit/.test(label)) return 'Updating…';
-  if(/create|add|promote/.test(label)) return 'Creating…';
-  if(/convert/.test(label)) return 'Converting…';
-  if(/delete|remove|clear|dismiss|archive/.test(label)) return 'Processing…';
-  if(/confirm/.test(label)) return 'Confirming…';
-  if(/link/.test(label)) return 'Linking…';
-  return 'Working…';
 }
 
 function successTitle(message:string){
@@ -125,31 +110,19 @@ export default function DashboardActionFeedback(){
   },[feedback]);
 
   useEffect(()=>{
-    const onSubmit=(event:Event)=>{
-      const submitEvent=event as SubmitEvent;
-      const form=submitEvent.target instanceof HTMLFormElement?submitEvent.target:null;
-      if(!form || form.dataset.dashboardManagedState==='true') return;
-      if((form.getAttribute('method')||'').toLowerCase()==='get') return;
-
-      saveView();
-      const submitter=submitEvent.submitter instanceof HTMLElement?submitEvent.submitter:null;
-      const message=pendingLabel(submitter);
-      setFeedback({kind:'loading',message});
-      form.dataset.dashboardPending='true';
-      if(submitter) submitter.setAttribute('aria-busy','true');
+    const onActionState=(event:Event)=>{
+      const detail=(event as CustomEvent<ActionStateDetail>).detail;
+      if(!detail) return;
+      if(detail.pending){
+        saveView();
+        setFeedback({kind:'loading',message:detail.message||'Working…'});
+      }else{
+        setFeedback(current=>current?.kind==='loading'?null:current);
+      }
     };
 
-    const onPageShow=()=>{
-      document.querySelectorAll<HTMLFormElement>('form[data-dashboard-pending="true"]').forEach(form=>delete form.dataset.dashboardPending);
-      document.querySelectorAll<HTMLElement>('[aria-busy="true"]').forEach(element=>element.removeAttribute('aria-busy'));
-    };
-
-    document.addEventListener('submit',onSubmit,true);
-    window.addEventListener('pageshow',onPageShow);
-    return ()=>{
-      document.removeEventListener('submit',onSubmit,true);
-      window.removeEventListener('pageshow',onPageShow);
-    };
+    window.addEventListener(ACTION_STATE_EVENT,onActionState as EventListener);
+    return ()=>window.removeEventListener(ACTION_STATE_EVENT,onActionState as EventListener);
   },[]);
 
   if(!feedback) return null;
