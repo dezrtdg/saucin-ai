@@ -19,7 +19,7 @@ await app.register(healthRoutes);
 await app.register(adminRoutes);
 await app.register(liveModerationRoutes);
 
-app.get('/', async () => ({ service: 'Saucin AI API', version: '1.4.0' }));
+app.get('/', async () => ({ service: 'Saucin AI API', version: '1.4.2' }));
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
 startModerationNoticeEnricher();
