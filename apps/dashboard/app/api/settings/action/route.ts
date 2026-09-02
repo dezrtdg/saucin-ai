@@ -167,6 +167,10 @@ export async function POST(request:Request){
         break;
       }
 
+      case 'moderation.diagnostics.clear':
+        await call('/api/moderation/diagnostics',{method:'DELETE'});
+        break;
+
       default:
         return NextResponse.json({error:'Unsupported settings action.'},{status:400});
     }
