@@ -343,7 +343,16 @@ export async function getIssueIdForDiscordThread(channelId: string): Promise<num
 }
 
 export async function getSuggestionIdForDiscordThread(channelId:string):Promise<number|null>{
-  const result=await db.query('SELECT id FROM suggestions WHERE discord_thread_id=$1 LIMIT 1',[channelId]);
+  const result=await db.query(`
+    SELECT suggestion_id AS id
+      FROM suggestion_discord_thread_links
+     WHERE thread_id=$1
+    UNION ALL
+    SELECT id
+      FROM suggestions
+     WHERE discord_thread_id=$1
+       AND NOT EXISTS (SELECT 1 FROM suggestion_discord_thread_links WHERE thread_id=$1)
+    LIMIT 1`,[channelId]);
   return result.rowCount?Number(result.rows[0].id):null;
 }
 
@@ -437,7 +446,15 @@ export async function postIssueStatusUpdate(issueId: number, fromStatus: string,
 export async function ensureSuggestionDiscordThread(suggestionId:number,originThreadId?:string|null){
   const suggestion=await getSuggestion(suggestionId);
   if(!suggestion||!discord.isReady()) return null;
-  if(suggestion.discord_thread_id) return String(suggestion.discord_thread_id);
+  if(suggestion.discord_thread_id){
+    if(originThreadId&&originThreadId!==String(suggestion.discord_thread_id)){
+      await db.query(`
+        INSERT INTO suggestion_discord_thread_links (thread_id,suggestion_id,link_type)
+        VALUES ($1,$2,'source')
+        ON CONFLICT (thread_id) DO UPDATE SET suggestion_id=EXCLUDED.suggestion_id`,[originThreadId,suggestionId]);
+    }
+    return String(suggestion.discord_thread_id);
+  }
   const settings=await getSuggestionAutomationSettings();
   if(!settings.auto_create_forum_posts||!settings.forum_channel_id) return null;
 
@@ -478,6 +495,11 @@ export async function ensureSuggestionDiscordThread(suggestionId:number,originTh
     UPDATE suggestions
        SET discord_thread_id=$1,discord_status_channel_id=$2,discord_status_message_id=$3,updated_at=NOW()
      WHERE id=$4`,[String(thread.id),String(thread.id),String(statusMessage.id),suggestionId]);
+  await db.query(`
+    INSERT INTO suggestion_discord_thread_links (thread_id,suggestion_id,link_type)
+    VALUES ($1,$2,'primary')
+    ON CONFLICT (thread_id) DO UPDATE
+    SET suggestion_id=EXCLUDED.suggestion_id,link_type='primary'`,[String(thread.id),suggestionId]);
   await syncSuggestionDiscordPost(suggestionId).catch(()=>false);
   return String(thread.id);
 }
@@ -579,6 +601,39 @@ async function handleMessage(message: Message) {
       content:evidenceText
     }).catch(error=>console.error('[suggestions] failed to process forum reply',error));
     await syncSuggestionDiscordPost(linkedSuggestionId).catch(()=>false);
+    return;
+  }
+
+  // A player-created post inside the configured suggestions forum is itself an
+  // explicit suggestion submission. It does not depend on the thread inheriting
+  // a normal channel policy, which prevents newly-created forum posts from being
+  // ignored before the next channel sync.
+  const suggestionSettings=await getSuggestionAutomationSettings().catch(()=>null);
+  const parentId=(message.channel as any).isThread?.()?String((message.channel as any).parentId||''):'';
+  if(suggestionSettings?.forum_channel_id&&parentId===suggestionSettings.forum_channel_id){
+    const storedId=await storeMessage(message);
+    const recorded=await recordSuggestion({
+      text:evidenceText,
+      title:getChannelName(message.channel)||message.content,
+      discordUserId:message.author.id,
+      channelId:message.channelId,
+      discordMessageId:storedId,
+      source:'suggestion_forum_submission'
+    });
+    const suggestion=recorded.suggestion;
+    if(suggestion){
+      const threadId=await ensureSuggestionDiscordThread(Number(suggestion.id),message.channelId)
+        .catch(error=>{console.warn('[suggestions] unable to link forum submission',error);return null;});
+      const primary=await getSuggestion(Number(suggestion.id))||suggestion;
+      if(threadId&&threadId!==message.channelId){
+        await (message.channel as any).send({
+          content:`This idea matches **${primary.public_id||`SUG-${primary.id}`} · ${primary.title}**. Your support and this discussion are linked to the existing suggestion.`,
+          components:suggestionButtons(Number(primary.id),threadId),
+          allowedMentions:{parse:[]}
+        }).catch(()=>null);
+      }
+      await syncSuggestionDiscordPost(Number(primary.id)).catch(()=>false);
+    }
     return;
   }
 
