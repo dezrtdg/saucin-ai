@@ -24,6 +24,16 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'issues.ticket', label: 'Manage Discord tickets', description: 'Create and synchronize Discord issue tickets.' },
     { key: 'issues.delete', label: 'Delete issues', description: 'Permanently delete known issues.' }
   ]},
+  { key: 'suggestions', label: 'Suggestions', permissions: [
+    { key: 'suggestions.view', label: 'View suggestions', description: 'View clustered community suggestions, support counts, source messages, and status.' },
+    { key: 'suggestions.manage', label: 'Manage suggestions', description: 'Create, edit, triage, annotate, and change the status of community suggestions.' }
+  ]},
+  { key: 'moderation', label: 'Moderation', permissions: [
+    { key: 'moderation.view', label: 'View moderation', description: 'View moderation detections, cases, player feedback, and history.' },
+    { key: 'moderation.review', label: 'Review moderation cases', description: 'Confirm, dismiss, reopen, and annotate moderation cases.' },
+    { key: 'moderation.actions', label: 'Take moderation actions', description: 'Allow live reminders, warnings, message deletion, and Discord timeouts when enforcement is enabled.' },
+    { key: 'moderation.configure', label: 'Configure moderation', description: 'Change moderation mode, thresholds, exemptions, diagnostics, and rule-specific detection settings.' }
+  ]},
   { key: 'knowledge', label: 'Knowledge', permissions: [
     { key: 'knowledge.view', label: 'View knowledge', description: 'View Server Rules, Discord Rules, guides, and knowledge articles.' },
     { key: 'knowledge.create', label: 'Create articles', description: 'Create new knowledge articles manually.' },
@@ -46,17 +56,11 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'settings.issues.manage', label: 'Manage issue settings', description: 'Manage issue categories, ticket automation, and public response templates.' },
     { key: 'settings.permissions.manage', label: 'Manage permissions', description: 'Change which Discord roles can access dashboard modules and actions.' }
   ]},
-  { key: 'future', label: 'Future modules', permissions: [
-    { key: 'suggestions.view', label: 'View suggestions', description: 'View collected community suggestions when the module is enabled.' },
-    { key: 'suggestions.manage', label: 'Manage suggestions', description: 'Triage and manage suggestions when the module is enabled.' },
-    { key: 'moderation.view', label: 'View moderation', description: 'View moderation detections, cases, and history.' },
-    { key: 'moderation.review', label: 'Review moderation cases', description: 'Approve, dismiss, and annotate moderation cases.' },
-    { key: 'moderation.actions', label: 'Take moderation actions', description: 'Warn, remove messages, or timeout members when moderation enforcement is enabled.' },
-    { key: 'moderation.configure', label: 'Configure moderation', description: 'Change moderation rules, thresholds, exemptions, and enforcement ladders.' },
-    { key: 'announcements.view', label: 'View announcements', description: 'View announcement drafts and history.' },
-    { key: 'announcements.manage', label: 'Manage announcements', description: 'Create, schedule, edit, and send announcements.' },
-    { key: 'txadmin.view', label: 'View txAdmin intelligence', description: 'View server/log intelligence when txAdmin integration is enabled.' },
-    { key: 'txadmin.manage', label: 'Manage txAdmin integration', description: 'Change txAdmin integration and server intelligence settings.' }
+  { key: 'planned', label: 'Planned modules', permissions: [
+    { key: 'announcements.view', label: 'View announcements', description: 'View announcement drafts and history when the module is enabled.' },
+    { key: 'announcements.manage', label: 'Manage announcements', description: 'Create, schedule, edit, and send announcements when the module is enabled.' },
+    { key: 'txadmin.view', label: 'View txAdmin intelligence', description: 'View server and log intelligence when txAdmin integration is enabled.' },
+    { key: 'txadmin.manage', label: 'Manage txAdmin integration', description: 'Change txAdmin integration and server intelligence settings when the module is enabled.' }
   ]}
 ];
 
