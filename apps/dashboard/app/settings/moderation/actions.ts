@@ -35,23 +35,44 @@ export async function saveModerationSettingsAction(formData:FormData){
   });
 }
 
-export async function saveModerationRuleAction(articleId:string,formData:FormData){
-  return runDashboardAction({fallbackPath:'/settings/moderation',successMessage:'Moderation rule settings saved.'},async()=>{
-    const min=val(formData,'minimum_confidence');
-    const days=val(formData,'repeat_window_days');
-    await api(`/api/moderation/rules/${articleId}`,{method:'PUT',body:JSON.stringify({
-      enabled:checked(formData,'enabled'),
-      minimum_confidence:min?Number(min):null,
-      recommended_action:'reminder',
-      action_ladder:standardActionLadder,
-      repeat_window_days:days?Number(days):null,
-      exempt_role_ids:[...new Set(formData.getAll('exempt_role_ids').map(String).filter(Boolean))],
-      channel_ids:[...new Set(formData.getAll('channel_ids').map(String).filter(Boolean))]
-    })});
-    revalidatePath('/settings/moderation');
+export async function saveModerationRuleAction(
+  articleId:string,
+  previous:{status:'idle'|'saved'|'error';revision:number;message?:string},
+  formData:FormData
+){
+  const min=val(formData,'minimum_confidence');
+  const days=val(formData,'repeat_window_days');
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),12000);
+
+  try {
+    await api(`/api/moderation/rules/${articleId}`,{
+      method:'PUT',
+      signal:controller.signal,
+      body:JSON.stringify({
+        enabled:checked(formData,'enabled'),
+        minimum_confidence:min?Number(min):null,
+        recommended_action:'reminder',
+        action_ladder:standardActionLadder,
+        repeat_window_days:days?Number(days):null,
+        exempt_role_ids:[...new Set(formData.getAll('exempt_role_ids').map(String).filter(Boolean))],
+        channel_ids:[...new Set(formData.getAll('channel_ids').map(String).filter(Boolean))]
+      })
+    });
     revalidatePath('/moderation');
-    return null;
-  });
+    return {status:'saved' as const,revision:previous.revision+1,message:'Rule settings saved.'};
+  } catch(error) {
+    const aborted=controller.signal.aborted;
+    return {
+      status:'error' as const,
+      revision:previous.revision+1,
+      message:aborted
+        ? 'The moderation API did not respond within 12 seconds. Nothing was left spinning; try again or check the API container log.'
+        : error instanceof Error ? error.message : 'Unable to save moderation rule settings.'
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function clearModerationDiagnosticsAction(){
