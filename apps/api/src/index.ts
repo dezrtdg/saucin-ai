@@ -5,8 +5,10 @@ import { redis } from './redis.js';
 import { startDiscord, discord } from './discord/client.js';
 import { healthRoutes } from './routes/health.js';
 import { adminRoutes } from './routes/admin.js';
+import { liveModerationRoutes } from './routes/liveModeration.js';
 import { backfillKnowledgeEmbeddings } from './services/knowledge.js';
 import { backfillIssueEmbeddings } from './services/issues.js';
+import { startLiveModerationWorker, stopLiveModerationWorker } from './services/liveModeration.js';
 
 const app = Fastify({ logger: true });
 await runMigrations();
@@ -14,16 +16,20 @@ await redis.connect();
 
 await app.register(healthRoutes);
 await app.register(adminRoutes);
+await app.register(liveModerationRoutes);
 
-app.get('/', async () => ({ service: 'Saucin AI API', version: '1.3.0' }));
+app.get('/', async () => ({ service: 'Saucin AI API', version: '1.4.0' }));
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
-startDiscord().catch((error) => app.log.error(error, 'Discord startup failed'));
+startDiscord()
+  .then(() => startLiveModerationWorker())
+  .catch((error) => app.log.error(error, 'Discord startup failed'));
 backfillKnowledgeEmbeddings(200).catch((error) => app.log.error(error, 'Knowledge embedding backfill failed'));
 backfillIssueEmbeddings(100).catch((error) => app.log.error(error, 'Issue embedding backfill failed'));
 
 async function shutdown(signal: string) {
   app.log.info({ signal }, 'Shutting down');
+  stopLiveModerationWorker();
   await discord.destroy();
   await redis.quit().catch(() => undefined);
   await db.end();
