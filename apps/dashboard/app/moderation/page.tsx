@@ -12,7 +12,7 @@ function when(v:string){return new Date(v).toLocaleString()}
 function recommendation(c:Case){
   const parts=[c.recommended_action.replaceAll('_',' ')];
   if(c.delete_message_recommended) parts.push('delete message');
-  if(c.staff_review_required||(c.offense_number||1)>=4) parts.push('staff review');
+  if(c.staff_review_required||(c.offense_number||1)>=4) parts.push('staff follow-up');
   return [...new Set(parts)].join(' + ');
 }
 function liveStatus(c:Case){
@@ -30,16 +30,16 @@ export default async function ModerationPage({searchParams}:{searchParams:Promis
   const mode=live.effective_mode;
   const modeTitle=mode==='live'?'Live Enforcement is active':mode==='observe'?'Observe Mode is active':'Moderation detection is off';
   const modeText=mode==='live'
-    ? 'Saucin AI can apply the standard reminder, warning, message deletion, and timeout ladder. Only staff-confirmed prior cases advance escalation.'
+    ? 'Successful live reminders, warnings, and timeouts automatically confirm the case and advance future escalation. Staff can dismiss a case to correct the history.'
     : mode==='observe'
-      ? 'Saucin AI creates cases for staff review but does not take player-facing moderation actions.'
+      ? 'Saucin AI creates cases for staff review but does not take player-facing moderation actions. Staff confirmation is required before an Observe case counts.'
       : 'Enable Observe Mode or Live Enforcement in Settings when you are ready.';
   return <>
-    <header className="pageHeader compactPageHeader"><div><p className="eyebrow">{mode==='live'?'LIVE ENFORCEMENT':mode==='observe'?'OBSERVE MODE':'MODERATION'}</p><h1>Moderation</h1><p>Review Discord-rule detections, automated action results, and staff-confirmed repeat history.</p></div>{can(access,'moderation.configure')?<Link className="button" href="/settings/moderation">Moderation Settings</Link>:null}</header>
+    <header className="pageHeader compactPageHeader"><div><p className="eyebrow">{mode==='live'?'LIVE ENFORCEMENT':mode==='observe'?'OBSERVE MODE':'MODERATION'}</p><h1>Moderation</h1><p>Review Discord-rule detections, automated action results, and repeat history.</p></div>{can(access,'moderation.configure')?<Link className="button" href="/settings/moderation">Moderation Settings</Link>:null}</header>
     <div className={`${styles.modeBanner} ${mode==='off'?styles.modeOff:''}`}><div><strong>{modeTitle}</strong><p>{modeText}</p></div><span className={styles.observePill}>{mode.toUpperCase()}</span></div>
     <div className={styles.stats}><div className={styles.stat}><span>Pending review</span><strong>{data.stats.pending||0}</strong></div><div className={styles.stat}><span>Detected 24h</span><strong>{data.stats.detected_24h||0}</strong></div><div className={styles.stat}><span>Live actions pending</span><strong>{live.pending_actions||0}</strong></div><div className={styles.stat}><span>Live action issues 24h</span><strong>{live.failed_actions_24h||0}</strong></div></div>
     <div className={styles.filters}><Link className={`${styles.filter} ${!status?styles.active:''}`} href="/moderation">All</Link>{['pending','confirmed','dismissed'].map(s=><Link key={s} className={`${styles.filter} ${status===s?styles.active:''}`} href={`/moderation?status=${s}`}>{s[0].toUpperCase()+s.slice(1)}</Link>)}</div>
-    <section className="panel"><div className="panelTitle"><div><h2>Moderation cases</h2><p>Staff confirmation controls future escalation even when a live action was already applied.</p></div><span className="badge">{data.cases.length} shown</span></div>
+    <section className="panel"><div className="panelTitle"><div><h2>Moderation cases</h2><p>Live cases auto-confirm after a successful primary action; staff can still dismiss/correct them. Failed primary actions stay pending.</p></div><span className="badge">{data.cases.length} shown</span></div>
       {data.cases.length?<div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>Case</th><th>Member / message</th><th>Rule</th><th>Confidence</th><th>Status</th><th>Detected</th></tr></thead><tbody>{data.cases.map(c=><tr key={c.id}><td><Link className={styles.caseLink} href={`/moderation/${c.id}`}><strong>{c.public_id}</strong><small>{c.channel_name?`#${c.channel_name}`:'Discord'}</small></Link></td><td><Link className={styles.caseLink} href={`/moderation/${c.id}`}><strong>{c.author_name||c.discord_user_id}</strong><small>{c.message_content}</small></Link></td><td><strong>{c.rule_title}</strong><small className={styles.ruleEscalation}>Offense #{c.offense_number||1} · {recommendation(c)}{liveStatus(c)}</small></td><td className={styles.confidence}>{pct(c.confidence)}</td><td><span className={`${styles.badge} ${styles[c.status as 'pending']||''}`}>{c.status}</span></td><td>{when(c.created_at)}</td></tr>)}</tbody></table></div>:<div className={styles.empty}>No moderation cases match this view yet.</div>}
     </section>
   </>;
