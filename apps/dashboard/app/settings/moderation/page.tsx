@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
 import PendingActionButton from '../../../components/PendingActionButton';
+import ModerationRuleForm from '../../../components/ModerationRuleForm';
 import { saveModerationRuleAction, saveModerationSettingsAction } from './actions';
 import styles from '../../moderation/moderation.module.css';
 
@@ -100,7 +101,7 @@ export default async function ModerationSettingsPage(){
       {data.rules.length?data.rules.map(rule=><details className={styles.ruleConfig} key={rule.id}>
         <summary><strong>{rule.title}</strong><span>{rule.moderation_enabled?'Enabled':'Disabled'} · {rule.minimum_confidence==null?'global confidence':`${Math.round(Number(rule.minimum_confidence)*100)}%`} · standard ladder</span></summary>
         <div className={styles.ruleBody}>
-          <form action={saveModerationRuleAction.bind(null,String(rule.id))} className="knowledgeForm">
+          <ModerationRuleForm action={saveModerationRuleAction.bind(null,String(rule.id))}>
             <div className={styles.settingsGrid}>
               <label className="settingToggleCard"><input type="checkbox" name="enabled" defaultChecked={rule.moderation_enabled}/><span><strong>Detect this rule</strong><small>Disabled rules are not considered by moderation AI.</small></span></label>
               <label className="field"><span>Confidence override</span><input className="input" type="number" min="0.50" max="0.99" step="0.01" name="minimum_confidence" defaultValue={rule.minimum_confidence==null?'':Number(rule.minimum_confidence).toFixed(2)} placeholder={String(s.minimum_confidence)}/><small>Blank uses the global threshold.</small></label>
@@ -108,8 +109,7 @@ export default async function ModerationSettingsPage(){
               <div className={styles.full}><div className="settingsSubsection"><h3>Channel scope</h3><p>Leave all unchecked to use every monitored channel.</p></div><div className={styles.checkGrid}>{monitored.length?monitored.map(c=><label className={styles.check} key={c.id}><input type="checkbox" name="channel_ids" value={c.id} defaultChecked={rule.channel_ids.includes(c.id)}/><span>#{c.name||c.id}</span></label>):<span>No monitored channels yet.</span>}</div></div>
               <div className={styles.full}><div className="settingsSubsection"><h3>Additional exempt roles</h3><p>These apply only to this rule and are combined with global exemptions.</p></div><div className={styles.checkGrid}>{data.roles.map(r=><label className={styles.check} key={r.id}><input type="checkbox" name="exempt_role_ids" value={r.id} defaultChecked={rule.exempt_role_ids.includes(r.id)}/><span>{r.name}</span></label>)}</div></div>
             </div>
-            <div className="formActions"><p>The verified rule text remains in the Knowledge Library; moderation settings do not rewrite policy or the standard ladder.</p><PendingActionButton idleLabel="Save rule settings" pendingLabel="Saving rule settings…" className="button primary"/></div>
-          </form>
+          </ModerationRuleForm>
         </div>
       </details>):<div className={styles.empty}>Publish a Discord Rule before configuring moderation detection.</div>}
     </section>
