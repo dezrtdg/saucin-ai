@@ -12,6 +12,25 @@ export type SuggestionQueryPlan = {
 
 const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
+export type SuggestionAutomationSettings = {
+  forum_channel_id: string | null;
+  auto_create_forum_posts: boolean;
+  collect_thread_details: boolean;
+  ai_summarize_thread: boolean;
+  edit_original_status_message: boolean;
+  post_status_updates_to_thread: boolean;
+  include_suggestion_id: boolean;
+  include_support_count: boolean;
+};
+
+export type SuggestionAiDraft = {
+  title: string;
+  summary: string;
+  category: string;
+  related_terms: string[];
+  expansion_note: string;
+};
+
 function unique(values:string[],max=30){
   return [...new Set(values.map(value=>String(value).trim()).filter(Boolean))].slice(0,max);
 }
@@ -21,7 +40,60 @@ function normalize(value:string){
 }
 
 function suggestionText(row:any){
-  return [row.title,row.summary,row.category,...(row.related_terms||[])].filter(Boolean).join('\n');
+  return [row.title,row.summary,row.community_context,row.category,...(row.related_terms||[])].filter(Boolean).join('\n');
+}
+
+function cleanDraftList(values:unknown,max=30,itemMax=160){
+  if(!Array.isArray(values)) return [];
+  return unique(values.map(value=>String(value).replace(/\s+/g,' ').trim().slice(0,itemMax)).filter(Boolean),max);
+}
+
+export async function buildSuggestionDraft(input:{
+  sourceText:string;
+  existingTitle?:string;
+  existingSummary?:string;
+  existingCategory?:string;
+  existingRelatedTerms?:string[];
+}):Promise<SuggestionAiDraft>{
+  const sourceText=String(input.sourceText||'').trim();
+  if(sourceText.length<8) throw new Error('Provide more information before asking AI to develop this suggestion.');
+  if(!client||!env.AI_ENABLED) throw new Error('AI suggestion authoring is unavailable because AI is disabled or no OpenAI API key is configured.');
+
+  const response=await client.responses.create({
+    model:env.AI_REPLY_MODEL,
+    reasoning:{effort:'low'},
+    instructions:`You are a community-idea editor for ${env.SERVER_NAME}. Turn the supplied player or staff idea into a clear, practical suggestion draft. Return ONLY compact JSON with keys: title, summary, category, related_terms, expansion_note.
+
+GROUNDING RULES:
+- The supplied text and existing draft are the only authority.
+- Preserve the original intent. Do not add promised features, technical claims, costs, dates, staff decisions, or requirements that were not supplied.
+- You may organize implications and useful discussion questions, but label uncertainty naturally instead of inventing facts.
+- summary should explain the idea, why the submitter appears to want it, useful examples already provided, and open details staff/community may want to discuss.
+- title must be concise and specific.
+- category must be a short lowercase dashboard label such as gameplay, economy, leo-ems, vehicles, criminal, qol, map, community, or general.
+- related_terms are broad retrieval phrases for recognizing differently worded versions of the same idea; they do not become factual claims.
+- expansion_note is a short staff-facing note describing what AI clarified and any important information still missing.`,
+    input:[
+      input.existingTitle?`EXISTING TITLE: ${input.existingTitle}`:'',
+      input.existingSummary?`EXISTING SUMMARY:\n${input.existingSummary}`:'',
+      input.existingCategory?`EXISTING CATEGORY: ${input.existingCategory}`:'',
+      input.existingRelatedTerms?.length?`EXISTING RELATED TERMS: ${input.existingRelatedTerms.join(', ')}`:'',
+      `SOURCE MATERIAL:\n${sourceText.slice(0,18000)}`
+    ].filter(Boolean).join('\n\n'),
+    max_output_tokens:1400
+  });
+
+  const jsonText=response.output_text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+  let parsed:any;
+  try{parsed=JSON.parse(jsonText);}catch{throw new Error('AI suggestion authoring returned an invalid structured response. Try again.');}
+  const fallbackTitle=String(input.existingTitle||sourceText).replace(/\s+/g,' ').trim().slice(0,180);
+  return {
+    title:String(parsed.title||fallbackTitle||'Community suggestion').replace(/\s+/g,' ').trim().slice(0,180),
+    summary:String(parsed.summary||input.existingSummary||sourceText).trim().slice(0,6000),
+    category:String(parsed.category||input.existingCategory||'general').toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,100)||'general',
+    related_terms:cleanDraftList(parsed.related_terms,40,160),
+    expansion_note:String(parsed.expansion_note||'').trim().slice(0,2000)
+  };
 }
 
 async function createEmbedding(input:string):Promise<number[]|null>{
@@ -57,6 +129,95 @@ export async function backfillSuggestionEmbeddings(limit=100){
   }
   if(indexed) console.log(`[suggestions] indexed ${indexed} suggestion embedding(s)`);
   return indexed;
+}
+
+export async function getSuggestionAutomationSettings():Promise<SuggestionAutomationSettings>{
+  const result=await db.query('SELECT * FROM suggestion_automation_settings WHERE id=1');
+  const row=result.rows[0]||{};
+  return {
+    forum_channel_id:row.forum_channel_id?String(row.forum_channel_id):null,
+    auto_create_forum_posts:row.auto_create_forum_posts!==false,
+    collect_thread_details:row.collect_thread_details!==false,
+    ai_summarize_thread:row.ai_summarize_thread!==false,
+    edit_original_status_message:row.edit_original_status_message!==false,
+    post_status_updates_to_thread:row.post_status_updates_to_thread!==false,
+    include_suggestion_id:row.include_suggestion_id!==false,
+    include_support_count:row.include_support_count!==false
+  };
+}
+
+export async function getSuggestionPublicMessage(suggestionOrId:any):Promise<string>{
+  const suggestion=typeof suggestionOrId==='number'?await getSuggestion(suggestionOrId):suggestionOrId;
+  if(!suggestion) return '';
+  const settings=await getSuggestionAutomationSettings();
+  const id=suggestion.public_id||`SUG-${String(suggestion.id).padStart(4,'0')}`;
+  const heading=settings.include_suggestion_id?`**${id} · ${suggestion.title}**`:`**${suggestion.title}**`;
+  const supporters=Number(suggestion.unique_supporters||suggestion.mention_count||0);
+  return [
+    heading,
+    `**Status:** ${String(suggestion.status||'candidate').replaceAll('_',' ')}`,
+    `**Category:** ${String(suggestion.category||'general').replaceAll('_',' ')}`,
+    settings.include_support_count?`**Supporters:** ${supporters}`:'',
+    '',
+    String(suggestion.summary||'').slice(0,1250),
+    suggestion.community_context?`\n**Community additions:**\n${String(suggestion.community_context).slice(0,450)}`:'',
+    '',
+    'Add details, examples, links, screenshots, or questions in this post. Use **I support this idea** to add your support without creating a duplicate.'
+  ].filter(line=>line!==null&&line!==undefined).join('\n').slice(0,1950);
+}
+
+async function summarizeSuggestionThread(suggestion:any,newContent:string){
+  if(!client||!env.AI_ENABLED) return '';
+  try{
+    const response=await client.responses.create({
+      model:env.AI_REPLY_MODEL,
+      reasoning:{effort:'low'},
+      instructions:`You maintain a concise community-context summary for a FiveM server suggestion. Return plain text only, maximum 650 characters. Use only details actually stated in the existing summary or new message. Preserve useful examples, links, requested behavior, concerns, and open questions. Do not invent implementation details, promises, staff decisions, or facts. Do not repeat the main suggestion unless needed for clarity.`,
+      input:`SUGGESTION: ${suggestion.title}\nMAIN SUMMARY: ${suggestion.summary}\nEXISTING COMMUNITY CONTEXT: ${suggestion.community_context||'(none)'}\nNEW FORUM MESSAGE: ${newContent.slice(0,5000)}`,
+      max_output_tokens:300
+    });
+    return response.output_text.trim().slice(0,1000);
+  }catch(error){
+    console.error('[suggestions] forum summary failed',error);
+    return '';
+  }
+}
+
+export async function processSuggestionThreadMessage(input:{
+  suggestionId:number;
+  discordMessageDbId:number;
+  discordUserId:string;
+  authorName:string;
+  content:string;
+}){
+  const settings=await getSuggestionAutomationSettings();
+  if(!settings.collect_thread_details) return {processed:false};
+  const inserted=await db.query(`
+    INSERT INTO suggestion_thread_entries
+      (suggestion_id,discord_message_id,discord_user_id,author_name,content)
+    VALUES ($1,$2,$3,$4,$5)
+    ON CONFLICT (discord_message_id) WHERE discord_message_id IS NOT NULL DO NOTHING
+    RETURNING id`,[input.suggestionId,input.discordMessageDbId,input.discordUserId,input.authorName,input.content]);
+  if(!inserted.rowCount) return {processed:false,duplicate:true};
+  await addSuggestionSupport(input.suggestionId,input.discordUserId,{source:'suggestion_forum'}).catch(()=>false);
+  await saveEvent(input.suggestionId,{
+    discordMessageId:input.discordMessageDbId,
+    discordUserId:input.discordUserId,
+    text:input.content,
+    source:'suggestion_forum'
+  });
+  const suggestion=await getSuggestion(input.suggestionId);
+  const communityContext=settings.ai_summarize_thread&&suggestion
+    ? await summarizeSuggestionThread(suggestion,input.content)
+    : '';
+  await db.query(`
+    UPDATE suggestions
+       SET community_context=CASE WHEN $1<>'' THEN $1 ELSE community_context END,
+           thread_last_activity_at=NOW(),
+           thread_summary_updated_at=CASE WHEN $1<>'' THEN NOW() ELSE thread_summary_updated_at END,
+           last_seen=NOW(),updated_at=NOW()
+     WHERE id=$2`,[communityContext,input.suggestionId]);
+  return {processed:true,community_context:communityContext};
 }
 
 function planText(plan:SuggestionQueryPlan){
@@ -250,25 +411,49 @@ export async function listSuggestions(input?:{status?:string;limit?:number}){
   return result.rows;
 }
 
-export async function updateSuggestion(id:number,input:{title:string;summary:string;category:string;status:string;staff_notes:string}){
+export async function updateSuggestion(id:number,input:{
+  title:string;summary:string;category:string;status:string;staff_notes:string;related_terms?:string[];changed_by?:string|null;
+}){
+  const before=await getSuggestion(id);
+  if(!before) return null;
+  const relatedTerms=input.related_terms===undefined
+    ? before.related_terms||[]
+    : unique(input.related_terms.map(value=>String(value).trim()).filter(Boolean),40);
   const result=await db.query(`
-    UPDATE suggestions SET title=$1,summary=$2,category=$3,status=$4,staff_notes=$5,embedding=NULL,embedding_updated_at=NULL,updated_at=NOW()
-     WHERE id=$6 RETURNING *`,[input.title.trim(),input.summary.trim(),input.category.trim()||'general',input.status,input.staff_notes.trim(),id]);
+    UPDATE suggestions
+       SET title=$1,summary=$2,category=$3,status=$4,staff_notes=$5,related_terms=$6,
+           normalized_text=$7,fingerprint=md5($7),embedding=NULL,embedding_updated_at=NULL,updated_at=NOW()
+     WHERE id=$8 RETURNING *`,[
+      input.title.trim(),input.summary.trim(),input.category.trim()||'general',input.status,input.staff_notes.trim(),
+      relatedTerms,normalize(`${input.title} ${input.summary} ${relatedTerms.join(' ')}`),id
+    ]);
   if(!result.rowCount) return null;
+  if(String(before.status)!==String(input.status)){
+    await db.query(`
+      INSERT INTO suggestion_updates (suggestion_id,update_type,from_value,to_value,created_by)
+      VALUES ($1,'status',$2,$3,$4)`,[id,String(before.status),String(input.status),input.changed_by||null]);
+  }
   await refreshSuggestionEmbedding(id).catch(error=>console.error('[suggestions] failed to refresh updated embedding',error));
   return getSuggestion(id);
 }
 
-export async function createManualSuggestion(input:{title:string;summary:string;category?:string;staff_notes?:string}){
-  const normalized=normalize(`${input.title} ${input.summary}`);
+export async function createManualSuggestion(input:{
+  title:string;summary:string;category?:string;staff_notes?:string;related_terms?:string[];source_text?:string;
+}){
+  const relatedTerms=unique((input.related_terms||[]).map(value=>String(value).trim()).filter(Boolean),40);
+  const normalized=normalize(`${input.title} ${input.summary} ${relatedTerms.join(' ')}`);
   const result=await db.query(`
-    INSERT INTO suggestions (title,summary,category,status,mention_count,normalized_text,fingerprint,staff_notes,updated_at)
-    VALUES ($1,$2,$3,'candidate',0,$4,md5($4),$5,NOW()) RETURNING id`,[
-      input.title.trim(),input.summary.trim(),input.category?.trim()||'general',normalized,input.staff_notes?.trim()||''
+    INSERT INTO suggestions
+      (title,summary,category,status,mention_count,normalized_text,fingerprint,related_terms,staff_notes,updated_at)
+    VALUES ($1,$2,$3,'candidate',0,$4,md5($4),$5,$6,NOW()) RETURNING id`,[
+      input.title.trim(),input.summary.trim(),input.category?.trim()||'general',normalized,relatedTerms,input.staff_notes?.trim()||''
     ]);
   const id=Number(result.rows[0].id);
   await db.query('UPDATE suggestions SET public_id=$1 WHERE id=$2',[`SUG-${String(id).padStart(4,'0')}`,id]);
-  await saveEvent(id,{text:input.summary,source:'dashboard'}).catch(()=>undefined);
+  await saveEvent(id,{
+    text:String(input.source_text||input.summary).trim(),
+    source:input.source_text?'dashboard_ai_source':'dashboard'
+  }).catch(()=>undefined);
   await refreshSuggestionEmbedding(id).catch(()=>undefined);
   return getSuggestion(id);
 }
