@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { api } from '../../../../lib/api';
 import { can, getDashboardAccess } from '../../../../lib/permissions';
-import { clearModerationDiagnosticsAction } from '../actions';
+import DirectSettingsForm from '../../../../components/DirectSettingsForm';
 import styles from '../../../moderation/moderation.module.css';
 
 type Diagnostic={
@@ -46,7 +46,6 @@ function detailSummary(row:Diagnostic){
 export default async function ModerationDiagnosticsPage(){
   const access=await getDashboardAccess();
   if(!can(access,'moderation.configure')) redirect('/settings');
-
   const data=await api<Data>('/api/moderation/diagnostics?limit=150');
 
   return <>
@@ -63,7 +62,7 @@ export default async function ModerationDiagnosticsPage(){
     <section className="panel">
       <div className="panelTitle">
         <div><h2>Recent live decisions</h2><p>Newest first. This records moderation decision gates only; it never performs a moderation action.</p></div>
-        <form action={clearModerationDiagnosticsAction}><button className="button" type="submit">Clear diagnostics</button></form>
+        <DirectSettingsForm operation="moderation.diagnostics.clear" layout="button" idleLabel="Clear diagnostics" pendingLabel="Clearing…" successMessage="Moderation diagnostics cleared." buttonClassName="button" refreshOnSuccess confirmMessage="Clear all moderation diagnostic events?"/>
       </div>
 
       {data.rows.length?<div className={styles.tableWrap}><table className={styles.table}>
