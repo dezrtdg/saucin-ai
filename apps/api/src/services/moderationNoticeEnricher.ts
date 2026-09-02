@@ -1,8 +1,17 @@
-import { Events, Message } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
+  Events,
+  Message
+} from 'discord.js';
 import { db } from '../db.js';
 import { discord } from '../discord/client.js';
+import { recordModerationPlayerFeedback } from './moderationFeedback.js';
 
 type NoticeCase = {
+  id: number;
   public_id: string;
   discord_user_id: string;
   rule_title: string;
@@ -58,10 +67,7 @@ function actionHeading(action: string) {
 }
 
 function actionResultText(row: NoticeCase) {
-  if (row.recommended_action === 'reminder') {
-    return `This is offense #${row.offense_number} for this rule. ${nextStepText(row.offense_number)}`;
-  }
-  if (row.recommended_action === 'warning') {
+  if (row.recommended_action === 'reminder' || row.recommended_action === 'warning') {
     return `This is offense #${row.offense_number} for this rule. ${nextStepText(row.offense_number)}`;
   }
   if (row.recommended_action === 'timeout_10m') {
@@ -75,14 +81,25 @@ function actionResultText(row: NoticeCase) {
 
 function buildNotice(row: NoticeCase) {
   const rule = row.rule_body ? cleanRuleBody(row.rule_body, row.rule_title) : '';
-  const ruleSection = rule
-    ? `\n\n**What this rule means:**\n${rule}`
-    : '';
+  const ruleSection = rule ? `\n\n**What this rule means:**\n${rule}` : '';
   const progression = actionResultText(row);
 
   return (`<@${row.discord_user_id}> **${actionHeading(row.recommended_action)} — ${row.rule_title}**`+
-    `${ruleSection}\n\n${progression}\n\nIf this detection was incorrect, staff can review and dismiss the case so it no longer counts toward escalation. \`${row.public_id}\``)
+    `${ruleSection}\n\n${progression}\n\nUse **I understand** to acknowledge this notice, or **Incorrect** if you believe the surrounding conversation changes how the message should be interpreted. Staff can review contested cases. \`${row.public_id}\``)
     .slice(0, 1900);
+}
+
+function feedbackButtons(caseId:number) {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`moderation:understood:${caseId}`)
+      .setLabel('I understand')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`moderation:incorrect:${caseId}`)
+      .setLabel('Incorrect')
+      .setStyle(ButtonStyle.Secondary)
+  )];
 }
 
 async function enrichModerationNotice(message: Message) {
@@ -92,14 +109,14 @@ async function enrichModerationNotice(message: Message) {
   // Only rewrite player-facing live moderation notices. Staff audit posts also contain
   // MOD case IDs, but they do not begin with a member mention and must remain untouched.
   if (!/^<@\d+>\s/.test(content)) return;
-  if (!/(?:\*\*Reminder:|\*\*Warning:|automated moderation applied)/i.test(content)) return;
+  if (!/(?:\*\*Reminder:|\*\*Warning:|automated moderation applied|\*\*Reminder —|\*\*Warning —|\*\*10 Minute Timeout —|\*\*1 Hour Timeout —)/i.test(content)) return;
 
   const match = content.match(/`(MOD-\d+)`/i);
   if (!match) return;
   const publicId = match[1].toUpperCase();
 
   const result = await db.query<NoticeCase>(`
-    SELECT c.public_id,c.discord_user_id,c.rule_title,c.recommended_action,c.offense_number,
+    SELECT c.id,c.public_id,c.discord_user_id,c.rule_title,c.recommended_action,c.offense_number,
            c.repeat_window_days_used,c.delete_message_recommended,c.staff_review_required,
            CASE
              WHEN a.status='published' AND a.content_type='discord_rule' THEN a.body
@@ -113,9 +130,49 @@ async function enrichModerationNotice(message: Message) {
   const row = result.rows[0];
   if (!row) return;
   const expanded = buildNotice(row);
-  if (!expanded || expanded === content) return;
 
-  await message.edit({ content: expanded, allowedMentions: { parse: [], users: [row.discord_user_id] } });
+  await message.edit({
+    content: expanded || content,
+    components: feedbackButtons(row.id),
+    allowedMentions: { parse: [], users: [row.discord_user_id] }
+  });
+}
+
+async function handleModerationFeedbackButton(interaction:ButtonInteraction) {
+  const parts=interaction.customId.split(':');
+  if (parts[0]!=='moderation' || !['understood','incorrect'].includes(parts[1])) return;
+  const caseId=Number(parts[2]);
+  if (!Number.isInteger(caseId) || caseId<=0) return;
+
+  await interaction.deferReply({ephemeral:true});
+  const feedbackType=parts[1] as 'understood'|'incorrect';
+  const result=await recordModerationPlayerFeedback(caseId,interaction.user.id,feedbackType);
+
+  if (!result.ok && result.reason==='not_owner') {
+    await interaction.editReply('Only the member named in this moderation notice can use these buttons.');
+    return;
+  }
+  if (!result.ok) {
+    await interaction.editReply('That moderation case is no longer available.');
+    return;
+  }
+  if (result.already_recorded) {
+    await interaction.editReply(feedbackType==='understood'
+      ? 'Your acknowledgement was already recorded.'
+      : 'You already marked this moderation notice as incorrect. It remains flagged for staff review.');
+    return;
+  }
+
+  if (feedbackType==='understood') {
+    await interaction.editReply('Acknowledged. This records that you received and understood the moderation notice.');
+    return;
+  }
+
+  const secondPass=(result as any).reanalysis;
+  const recheck = secondPass?.available
+    ? ` A second-pass context check was also saved for staff review (${Math.round(Number(secondPass.confidence||0)*100)}% ${secondPass.matched?'match':'no match'}).`
+    : '';
+  await interaction.editReply(`Your disagreement was recorded and this case is now flagged for staff review.${recheck} The action is not automatically removed; staff can dismiss the case if the original detection was incorrect.`);
 }
 
 export function startModerationNoticeEnricher() {
@@ -126,5 +183,16 @@ export function startModerationNoticeEnricher() {
       console.warn('[moderation] unable to enrich live moderation notice', error);
     });
   });
-  console.log('[moderation] detailed rule notice enricher installed');
+  discord.on(Events.InteractionCreate, interaction => {
+    if (!interaction.isButton() || !interaction.customId.startsWith('moderation:')) return;
+    void handleModerationFeedbackButton(interaction).catch(async error => {
+      console.warn('[moderation] feedback button failed',error);
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply('Unable to record moderation feedback right now. Staff can still review the case from the dashboard.').catch(()=>undefined);
+      } else {
+        await interaction.reply({content:'Unable to record moderation feedback right now.',ephemeral:true}).catch(()=>undefined);
+      }
+    });
+  });
+  console.log('[moderation] detailed rule notices and player feedback buttons installed');
 }
