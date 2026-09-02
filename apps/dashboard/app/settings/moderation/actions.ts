@@ -13,12 +13,22 @@ const standardActionLadder = {
 } as const;
 
 export async function saveModerationSettingsAction(formData:FormData){
+  const desiredMode=val(formData,'mode')||'off';
+  const baseMode=desiredMode==='off'?'off':'observe';
+
   await api('/api/moderation/settings',{method:'PUT',body:JSON.stringify({
-    mode:val(formData,'mode')||'off',minimum_confidence:Number(val(formData,'minimum_confidence')||.9),repeat_window_days:Number(val(formData,'repeat_window_days')||7),
-    audit_channel_id:val(formData,'audit_channel_id')||null,post_observations_to_audit:checked(formData,'post_observations_to_audit'),
+    mode:baseMode,
+    minimum_confidence:Number(val(formData,'minimum_confidence')||.9),
+    repeat_window_days:Number(val(formData,'repeat_window_days')||7),
+    audit_channel_id:val(formData,'audit_channel_id')||null,
+    post_observations_to_audit:desiredMode==='live'?false:checked(formData,'post_observations_to_audit'),
     exempt_role_ids:[...new Set(formData.getAll('exempt_role_ids').map(String).filter(Boolean))],
     diagnostics_enabled:checked(formData,'diagnostics_enabled')
-  })}); revalidatePath('/settings/moderation'); revalidatePath('/moderation');
+  })});
+
+  await api('/api/moderation/live',{method:'PUT',body:JSON.stringify({mode:desiredMode})});
+  revalidatePath('/settings/moderation');
+  revalidatePath('/moderation');
 }
 
 export async function saveModerationRuleAction(articleId:string,formData:FormData){
