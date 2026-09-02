@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { env } from '../env.js';
 import { parseDashboardIdentity, permissionSnapshot } from '../services/permissions.js';
 import { getLiveModerationState, setLiveModerationMode, type EffectiveModerationMode } from '../services/liveModeration.js';
+import { getContestedModerationCases, getModerationFeedback } from '../services/moderationFeedback.js';
 
 async function dashboardAccess(request: FastifyRequest) {
   if (request.headers['x-dashboard-owner-allowlisted'] === '1') {
@@ -42,5 +43,17 @@ export async function liveModerationRoutes(app: FastifyInstance) {
     } catch (error) {
       return reply.code(400).send({error:error instanceof Error ? error.message : 'unable to change live moderation mode'});
     }
+  });
+
+  app.get('/api/moderation/cases/:id/feedback',async (request,reply) => {
+    if (!await requirePermission(request,reply,'moderation.view')) return;
+    const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+    return {feedback:await getModerationFeedback(params.id)};
+  });
+
+  app.get('/api/moderation/feedback/contested',async (request,reply) => {
+    if (!await requirePermission(request,reply,'moderation.view')) return;
+    const query=z.object({limit:z.coerce.number().int().min(1).max(100).optional()}).parse(request.query||{});
+    return {cases:await getContestedModerationCases(query.limit||25)};
   });
 }
