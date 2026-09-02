@@ -9,6 +9,7 @@ import { liveModerationRoutes } from './routes/liveModeration.js';
 import { backfillKnowledgeEmbeddings } from './services/knowledge.js';
 import { backfillIssueEmbeddings } from './services/issues.js';
 import { startLiveModerationWorker, stopLiveModerationWorker } from './services/liveModeration.js';
+import { startModerationNoticeEnricher } from './services/moderationNoticeEnricher.js';
 
 const app = Fastify({ logger: true });
 await runMigrations();
@@ -21,6 +22,7 @@ await app.register(liveModerationRoutes);
 app.get('/', async () => ({ service: 'Saucin AI API', version: '1.4.0' }));
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
+startModerationNoticeEnricher();
 startDiscord()
   .then(() => startLiveModerationWorker())
   .catch((error) => app.log.error(error, 'Discord startup failed'));
