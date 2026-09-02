@@ -206,7 +206,8 @@ Recommended rollout:
 
 In **Settings → Suggestions**, choose a Discord Forum or Media channel. When automatic forum discussions are enabled:
 
-- A new idea detected in Discord or created from the dashboard receives one linked discussion.
+- A new idea detected in a monitored channel is saved as a candidate and receives a confirmation prompt; confirming it creates the linked discussion.
+- Staff-created suggestions and player-created posts inside the configured forum are treated as intentional submissions and link immediately.
 - Similar ideas add unique supporters and source messages instead of creating duplicate dashboard records.
 - Player-created posts inside the configured forum are linked directly; duplicate forum posts point back to the existing primary discussion.
 - Replies, links, and attachment URLs remain attached to that idea.
