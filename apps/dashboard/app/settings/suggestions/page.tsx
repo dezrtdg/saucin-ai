@@ -6,6 +6,7 @@ import DirectSettingsForm from '../../../components/DirectSettingsForm';
 
 type Automation={
   forum_channel_id:string|null;
+  forum_tag_id:string|null;
   auto_create_forum_posts:boolean;
   collect_thread_details:boolean;
   ai_summarize_thread:boolean;
@@ -14,7 +15,8 @@ type Automation={
   include_suggestion_id:boolean;
   include_support_count:boolean;
 };
-type Channel={id:string;name:string;type:string;category_name:string|null;is_thread:boolean};
+type ForumTag={id:string;name:string;emoji:string|null;moderated:boolean};
+type Channel={id:string;name:string;type:string;category_name:string|null;is_thread:boolean;tags:ForumTag[]};
 type Settings={automation:Automation|null;channels:Channel[]};
 
 export default async function SuggestionSettingsPage(){
@@ -42,6 +44,7 @@ export default async function SuggestionSettingsPage(){
       >
         <div className="formGrid">
           <label className="field fieldFull"><span>Suggestions forum</span><select className="input select" name="forum_channel_id" defaultValue={a?.forum_channel_id||''}><option value="">Not configured</option>{data.channels.map(channel=><option value={channel.id} key={channel.id}>{channel.category_name?`${channel.category_name} → `:''}#{channel.name} · {channel.type}</option>)}</select><small>Only Discord Forum and Media channels appear here. Refresh channels from the Channels page if your forum is missing.</small></label>
+          <label className="field fieldFull"><span>Default forum tag</span><select className="input select" name="forum_tag_id" defaultValue={a?.forum_tag_id||''}><option value="">Automatic — use the forum’s first tag when required</option>{data.channels.map(channel=>channel.tags?.length?<optgroup label={`#${channel.name}`} key={channel.id}>{channel.tags.map(tag=><option value={tag.id} key={tag.id}>{tag.emoji?`${tag.emoji} `:''}{tag.name}{tag.moderated?' · staff-only':''}</option>)}</optgroup>:null)}</select><small>Saucin AI applies this tag to new posts. Automatic mode prevents Discord’s “tag is required” error by using the first available tag.</small></label>
           {[
             ['auto_create_forum_posts','Create confirmed forum discussions','Confirmed Discord-detected ideas and dashboard-created ideas receive their own forum post.'],
             ['collect_thread_details','Collect discussion replies','Save added examples, links, screenshots, questions, and other community context.'],
