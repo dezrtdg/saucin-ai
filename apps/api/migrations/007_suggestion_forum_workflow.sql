@@ -52,3 +52,21 @@ CREATE TABLE IF NOT EXISTS suggestion_updates (
 );
 CREATE INDEX IF NOT EXISTS idx_suggestion_updates_suggestion_time
   ON suggestion_updates(suggestion_id,created_at DESC);
+
+-- A suggestion has one primary discussion, but duplicate forum posts can be
+-- linked as source discussions so later replies still enrich the same idea.
+CREATE TABLE IF NOT EXISTS suggestion_discord_thread_links (
+  thread_id TEXT PRIMARY KEY,
+  suggestion_id BIGINT NOT NULL REFERENCES suggestions(id) ON DELETE CASCADE,
+  link_type TEXT NOT NULL DEFAULT 'source' CHECK (link_type IN ('primary','source')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_suggestion_discord_thread_links_suggestion
+  ON suggestion_discord_thread_links(suggestion_id,created_at DESC);
+
+INSERT INTO suggestion_discord_thread_links (thread_id,suggestion_id,link_type)
+SELECT discord_thread_id,id,'primary'
+  FROM suggestions
+ WHERE discord_thread_id IS NOT NULL
+ON CONFLICT (thread_id) DO UPDATE
+SET suggestion_id=EXCLUDED.suggestion_id,link_type='primary';
