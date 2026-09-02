@@ -11,7 +11,8 @@ type Event={
 };
 type Suggestion={
   id:number;public_id:string|null;title:string;summary:string;category:string;status:string;mention_count:number;unique_supporters:number;
-  staff_notes:string;related_terms:string[];first_seen:string;last_seen:string;created_at:string;updated_at:string;events:Event[];
+  staff_notes:string;related_terms:string[];community_context:string;discord_thread_id:string|null;
+  first_seen:string;last_seen:string;created_at:string;updated_at:string;events:Event[];
 };
 type Params=Promise<{id:string}>;
 function pretty(value:string){return value.replaceAll('_',' ')}
@@ -26,7 +27,7 @@ export default async function SuggestionDetailPage({params}:{params:Params}){
   const supporters=Number(suggestion.unique_supporters||suggestion.mention_count||0);
 
   return <>
-    <header className="pageHeader"><div><p className="eyebrow">{suggestion.public_id||`SUG-${suggestion.id}`}</p><h1>{suggestion.title}</h1><p>Review the clustered community request, supporting messages, and staff decision.</p></div><Link className="button" href="/suggestions">Back to Suggestions</Link></header>
+    <header className="pageHeader"><div><p className="eyebrow">{suggestion.public_id||`SUG-${suggestion.id}`}</p><h1>{suggestion.title}</h1><p>Review the clustered community request, linked discussion, supporting messages, and staff decision.</p></div><div className="headerActions">{suggestion.discord_thread_id?<a className="button primary" href={`https://discord.com/channels/@me/${suggestion.discord_thread_id}`} target="_blank" rel="noreferrer">Open Discord discussion ↗</a>:null}<Link className="button" href="/suggestions">Back to Suggestions</Link></div></header>
 
     <div className={styles.detailGrid}>
       <div className={styles.stat}><span>Status</span><strong style={{textTransform:'capitalize'}}>{pretty(suggestion.status)}</strong></div>
@@ -37,7 +38,9 @@ export default async function SuggestionDetailPage({params}:{params:Params}){
 
     {can(access,'suggestions.manage')?<section className="panel" style={{marginBottom:22}}><div className="panelTitle"><div><h2>Staff review</h2><p>Edit the clean staff-facing record without losing the original community messages below.</p></div><span className={`${styles.status} ${styles[suggestion.status as keyof typeof styles]||''}`}>{pretty(suggestion.status)}</span></div><SuggestionEditForm suggestion={suggestion}/></section>:<section className="panel" style={{marginBottom:22}}><div className="panelTitle"><div><h2>Suggestion</h2><p>Read-only view.</p></div></div><div className={styles.sectionBody}><p className={styles.summary}>{suggestion.summary}</p></div></section>}
 
-    {suggestion.related_terms?.length?<section className="panel" style={{marginBottom:22}}><div className="panelTitle"><div><h2>Detected concepts</h2><p>Terms Saucin AI uses to help recognize differently-worded versions of the same idea.</p></div></div><div className={styles.sectionBody} style={{display:'flex',gap:8,flexWrap:'wrap'}}>{suggestion.related_terms.map(term=><span className="badge" key={term}>{term}</span>)}</div></section>:null}
+    {suggestion.community_context?<section className="panel" style={{marginBottom:22}}><div className="panelTitle"><div><h2>Community additions</h2><p>AI-organized context from the linked forum discussion. Original messages remain preserved below.</p></div></div><div className={styles.sectionBody}><p className={styles.summary}>{suggestion.community_context}</p></div></section>:null}
+
+    {suggestion.related_terms?.length?<section className="panel" style={{marginBottom:22}}><div className="panelTitle"><div><h2>Detected concepts</h2><p>Terms Saucin AI uses to recognize differently-worded versions of the same idea.</p></div></div><div className={styles.sectionBody} style={{display:'flex',gap:8,flexWrap:'wrap'}}>{suggestion.related_terms.map(term=><span className="badge" key={term}>{term}</span>)}</div></section>:null}
 
     <section className="panel">
       <div className="panelTitle"><div><h2>Community history</h2><p>Original Discord wording is preserved so staff can judge what players actually requested.</p></div><span className="badge">{suggestion.events?.length||0} messages</span></div>
