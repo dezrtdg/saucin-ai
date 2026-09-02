@@ -4,20 +4,29 @@ Live Enforcement uses the same verified Discord-rule detection pipeline as Obser
 
 ## Standard ladder
 
-| Confirmed-repeat level | Automated action |
+| Repeat level | Automated action |
 | --- | --- |
 | 1st offense | Reminder |
 | 2nd offense | Warning |
 | 3rd offense | 10 minute Discord timeout + delete offending message |
-| 4th+ offense | 1 hour Discord timeout + delete offending message + required staff review |
+| 4th+ offense | 1 hour Discord timeout + delete offending message + staff follow-up flag |
 
-Only **staff-confirmed prior cases for the same rule** inside the configured repeat window count toward the next offense level. Pending and dismissed cases do not advance escalation.
+## How progression works
+
+- **Observe Mode:** a case must be Confirmed by staff before it counts toward a future offense level.
+- **Live Enforcement:** when the primary automated action succeeds, the case is automatically Confirmed and immediately becomes part of the repeat-offense history.
+- A failed secondary step does not block progression when the primary action succeeded. For example, if a 10 minute timeout succeeds but message deletion fails, the case still advances and the deletion error is logged.
+- If the primary action fails, the case remains Pending for staff and does not advance the ladder automatically.
+- Staff can Dismiss an automatically confirmed live case at any time to correct the member's future escalation history.
+- A 4th+ case is flagged for staff follow-up, but staff approval is **not** required before the automated 1 hour timeout/delete action is applied or before the case counts.
+
+Only cases currently in **Confirmed** status count toward the next offense level. Dismissed cases do not count.
 
 ## Modes
 
 - **Off** — no moderation detection or enforcement.
 - **Observe only** — creates moderation cases but never performs player-facing actions.
-- **Live enforcement** — creates the same moderation cases and queues the fixed action for immediate execution.
+- **Live enforcement** — creates the same moderation cases and queues the fixed action for immediate execution. Successful primary actions auto-confirm the case.
 
 Switching away from Live mode cancels actions that are still pending and have not started.
 
@@ -47,12 +56,13 @@ Every action stores durable execution results on the moderation case and adds a 
 - message deleted/already missing/not deleted
 - timeout applied/not applied and duration
 - execution errors
-- staff-review requirement
+- staff-follow-up flag
+- whether Live Enforcement automatically confirmed the case
 
 When a Staff Audit Channel is configured, Live mode posts action results there automatically. Observe-only audit posts are disabled while Live mode is active to prevent duplicate/misleading audit messages.
 
-## Staff review remains authoritative for escalation
+## Staff correction remains available
 
-A live action does not automatically make the case "confirmed." Staff can still Confirm or Dismiss the detection in the dashboard. Only Confirmed cases affect future repeat-offense calculations.
+Live Enforcement is designed to progress automatically. Staff review is an override/correction path rather than a required approval step. If staff determines an automated detection was wrong, dismissing the case removes it from future repeat-offense calculations.
 
 There are no automatic bans or kicks in v1.4.
