@@ -25,9 +25,12 @@ export default async function SuggestionDetailPage({params}:{params:Params}){
   let suggestion:Suggestion;
   try{suggestion=await api<Suggestion>(`/api/suggestions/${id}`);}catch(error){if(error instanceof DashboardApiError&&error.status===404)notFound();throw error;}
   const supporters=Number(suggestion.unique_supporters||suggestion.mention_count||0);
+  const discordUrl=suggestion.discord_thread_id&&process.env.DISCORD_GUILD_ID
+    ? `https://discord.com/channels/${process.env.DISCORD_GUILD_ID}/${suggestion.discord_thread_id}`
+    : null;
 
   return <>
-    <header className="pageHeader"><div><p className="eyebrow">{suggestion.public_id||`SUG-${suggestion.id}`}</p><h1>{suggestion.title}</h1><p>Review the clustered community request, linked discussion, supporting messages, and staff decision.</p></div><div className="headerActions">{suggestion.discord_thread_id?<a className="button primary" href={`https://discord.com/channels/@me/${suggestion.discord_thread_id}`} target="_blank" rel="noreferrer">Open Discord discussion ↗</a>:null}<Link className="button" href="/suggestions">Back to Suggestions</Link></div></header>
+    <header className="pageHeader"><div><p className="eyebrow">{suggestion.public_id||`SUG-${suggestion.id}`}</p><h1>{suggestion.title}</h1><p>Review the clustered community request, linked discussion, supporting messages, and staff decision.</p></div><div className="headerActions">{discordUrl?<a className="button primary" href={discordUrl} target="_blank" rel="noreferrer">Open Discord discussion ↗</a>:null}<Link className="button" href="/suggestions">Back to Suggestions</Link></div></header>
 
     <div className={styles.detailGrid}>
       <div className={styles.stat}><span>Status</span><strong style={{textTransform:'capitalize'}}>{pretty(suggestion.status)}</strong></div>
