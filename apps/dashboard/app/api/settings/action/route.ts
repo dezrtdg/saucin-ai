@@ -52,6 +52,19 @@ export async function POST(request:Request){
         })});
         break;
 
+      case 'suggestions.automation.update':
+        await call('/api/suggestions/settings',{method:'PUT',body:JSON.stringify({
+          forum_channel_id:value(formData,'forum_channel_id')||null,
+          auto_create_forum_posts:checked(formData,'auto_create_forum_posts'),
+          collect_thread_details:checked(formData,'collect_thread_details'),
+          ai_summarize_thread:checked(formData,'ai_summarize_thread'),
+          edit_original_status_message:checked(formData,'edit_original_status_message'),
+          post_status_updates_to_thread:checked(formData,'post_status_updates_to_thread'),
+          include_suggestion_id:checked(formData,'include_suggestion_id'),
+          include_support_count:checked(formData,'include_support_count')
+        })});
+        break;
+
       case 'issues.template.update':
         if(!id) return NextResponse.json({error:'Missing issue status.'},{status:400});
         await call(`/api/issues/templates/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({
