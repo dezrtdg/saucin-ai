@@ -206,11 +206,12 @@ Recommended rollout:
 
 In **Settings → Suggestions**, choose a Discord Forum or Media channel. When automatic forum discussions are enabled:
 
-- A new idea detected in a monitored channel is saved as a candidate and receives a confirmation prompt; confirming it creates the linked discussion.
+- A new idea detected in a monitored channel is saved as a candidate and receives **Confirm suggestion** and **Ignore suggestion** controls for the original submitter.
+- Confirming AI-organizes the preserved idea, chooses matching status/category tags, and creates the linked discussion; ignoring removes the bot prompt and hides that false detection from active suggestions.
 - Staff-created suggestions and player-created posts inside the configured forum are treated as intentional submissions and link immediately.
 - Similar ideas add unique supporters and source messages instead of creating duplicate dashboard records.
 - Player-created posts inside the configured forum are linked directly; duplicate forum posts point back to the existing primary discussion.
-- Replies, links, and attachment URLs remain attached to that idea.
+- Replies, links, and attachment URLs remain attached to that idea; AI can refine its candidate title, summary, category, related phrases, and forum category tag as the meaning becomes clearer.
 - AI can create or expand an editable staff-facing draft while every original submission remains preserved.
 - Saving an edit refreshes the primary Discord post, and status changes add a readable timeline update.
 
