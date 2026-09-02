@@ -2,9 +2,8 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
-import PendingActionButton from '../../../components/PendingActionButton';
+import DirectSettingsForm from '../../../components/DirectSettingsForm';
 import ModerationRuleForm from '../../../components/ModerationRuleForm';
-import { saveModerationSettingsAction } from './actions';
 import styles from '../../moderation/moderation.module.css';
 
 type Role={id:string;name:string;color:string};
@@ -70,7 +69,15 @@ export default async function ModerationSettingsPage(){
 
     <section className="panel settingsSection">
       <div className="panelTitle"><div><h2>Global moderation</h2><p>Moderation only evaluates Discord channels already enabled for monitoring on the Channels page.</p></div><span className="badge">{modeLabel.toUpperCase()}</span></div>
-      <form action={saveModerationSettingsAction} className="knowledgeForm">
+      <DirectSettingsForm
+        operation="moderation.global.update"
+        className="knowledgeForm"
+        idleLabel="Save moderation settings"
+        pendingLabel="Saving moderation settings…"
+        successMessage="Moderation settings saved."
+        refreshOnSuccess
+        footer={<p>Switching away from Live mode cancels any live actions that have not started yet.</p>}
+      >
         <div className={styles.settingsGrid}>
           <label className="field"><span>Mode</span><select className="input select" name="mode" defaultValue={live.effective_mode}><option value="off">Off</option><option value="observe">Observe only</option><option value="live" disabled={!canEnableLive&&live.effective_mode!=='live'}>Live enforcement</option></select><small>{canTakeActions?(live.readiness.ready?'Live enforcement is available.':'Live is locked until the Discord permission check passes.'):'Your dashboard role does not have the Take Moderation Actions permission.'}</small></label>
           <label className="field"><span>Minimum AI confidence</span><input className="input" type="number" min="0.50" max="0.99" step="0.01" name="minimum_confidence" defaultValue={Number(s.minimum_confidence).toFixed(2)}/><small>Recommended starting point: 0.90.</small></label>
@@ -80,8 +87,7 @@ export default async function ModerationSettingsPage(){
           <label className="settingToggleCard"><input type="checkbox" name="diagnostics_enabled" defaultChecked={s.diagnostics_enabled}/><span><strong>Enable moderation diagnostics</strong><small>Temporarily record why each Discord message was processed or skipped. Keep this off when you are done tuning.</small></span></label>
           <div className={`${styles.full}`}><div className="settingsSubsection"><h3>Globally exempt Discord roles</h3><p>Members with any selected role are skipped before AI analysis.</p></div><div className={styles.checkGrid}>{data.roles.map(r=><label className={styles.check} key={r.id}><input type="checkbox" name="exempt_role_ids" value={r.id} defaultChecked={s.exempt_role_ids.includes(r.id)}/><span>{r.name}</span></label>)}</div></div>
         </div>
-        <div className="formActions"><p>Switching away from Live mode cancels any live actions that have not started yet.</p><PendingActionButton idleLabel="Save moderation settings" pendingLabel="Saving moderation settings…" className="button primary"/></div>
-      </form>
+      </DirectSettingsForm>
     </section>
 
     <section className="panel">
