@@ -110,6 +110,18 @@ export default function DashboardActionFeedback(){
   },[feedback]);
 
   useEffect(()=>{
+    const rememberPosition=(event:Event)=>{
+      const submitEvent=event as SubmitEvent;
+      const form=submitEvent.target instanceof HTMLFormElement?submitEvent.target:null;
+      if(!form) return;
+      if((form.getAttribute('method')||'').toLowerCase()==='get') return;
+      saveView();
+    };
+    document.addEventListener('submit',rememberPosition,true);
+    return ()=>document.removeEventListener('submit',rememberPosition,true);
+  },[]);
+
+  useEffect(()=>{
     const onActionState=(event:Event)=>{
       const detail=(event as CustomEvent<ActionStateDetail>).detail;
       if(!detail) return;
