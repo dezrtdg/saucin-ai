@@ -5,6 +5,7 @@ import { env } from '../env.js';
 import {
   ensureSuggestionDiscordThread,
   getCachedDiscordChannelMetadata,
+  getCachedDiscordForumTags,
   postSuggestionStatusUpdate,
   syncSuggestionDiscordPost
 } from '../discord/client.js';
@@ -69,7 +70,8 @@ export async function suggestionRoutes(app:FastifyInstance){
         name:metadata?.name||row.channel_name||String(row.discord_channel_id),
         type:metadata?.type||'Unknown',
         category_name:metadata?.category_name||null,
-        is_thread:metadata?.is_thread||false
+        is_thread:metadata?.is_thread||false,
+        tags:getCachedDiscordForumTags(String(row.discord_channel_id))
       };
     }).filter(row=>!row.is_thread&&['Forum','Media'].includes(row.type));
     return {automation:automation.rows[0]||null,channels};
@@ -79,6 +81,7 @@ export async function suggestionRoutes(app:FastifyInstance){
     if(!await requirePermission(request,reply,'settings.suggestions.manage')) return;
     const body=z.object({
       forum_channel_id:z.string().trim().max(32).nullable().optional(),
+      forum_tag_id:z.string().trim().max(32).nullable().optional(),
       auto_create_forum_posts:z.boolean(),
       collect_thread_details:z.boolean(),
       ai_summarize_thread:z.boolean(),
@@ -89,12 +92,13 @@ export async function suggestionRoutes(app:FastifyInstance){
     }).parse(request.body);
     const result=await db.query(`
       UPDATE suggestion_automation_settings
-         SET forum_channel_id=$1,auto_create_forum_posts=$2,collect_thread_details=$3,
-             ai_summarize_thread=$4,edit_original_status_message=$5,
-             post_status_updates_to_thread=$6,include_suggestion_id=$7,
-             include_support_count=$8,updated_at=NOW()
+         SET forum_channel_id=$1,forum_tag_id=$2,auto_create_forum_posts=$3,collect_thread_details=$4,
+             ai_summarize_thread=$5,edit_original_status_message=$6,
+             post_status_updates_to_thread=$7,include_suggestion_id=$8,
+             include_support_count=$9,updated_at=NOW()
        WHERE id=1 RETURNING *`,[
-      body.forum_channel_id||null,body.auto_create_forum_posts,body.collect_thread_details,
+      body.forum_channel_id||null,body.forum_tag_id||null,
+      body.auto_create_forum_posts,body.collect_thread_details,
       body.ai_summarize_thread,body.edit_original_status_message,
       body.post_status_updates_to_thread,body.include_suggestion_id,body.include_support_count
     ]);
