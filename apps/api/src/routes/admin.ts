@@ -304,6 +304,35 @@ async function discordTicketDestinations() {
   return { text_channels, categories };
 }
 
+async function discordIssueDestinations(){
+  if(env.DISCORD_GUILD_ID&&discord.isReady()){
+    const guild=discord.guilds.cache.get(env.DISCORD_GUILD_ID);
+    if(guild){
+      const fetched=await guild.channels.fetch().catch(()=>null);
+      if(fetched){
+        const allowed=new Set<number>([ChannelType.GuildText,ChannelType.GuildAnnouncement,ChannelType.GuildForum,ChannelType.GuildMedia]);
+        const categories=new Map([...fetched.values()]
+          .filter(channel=>channel?.type===ChannelType.GuildCategory)
+          .map(channel=>[String(channel!.id),String((channel as any).name||channel!.id)]));
+        return [...fetched.values()]
+          .filter(channel=>channel&&allowed.has(channel.type))
+          .map(channel=>({
+            id:String(channel!.id),name:String((channel as any).name||channel!.id),
+            type:channel!.type===ChannelType.GuildForum?'Forum':channel!.type===ChannelType.GuildMedia?'Media':channel!.type===ChannelType.GuildAnnouncement?'Announcement':'Text',
+            category_name:(channel as any).parentId?categories.get(String((channel as any).parentId))||null:null,
+            is_thread:false,position:Number((channel as any).position||0)
+          }))
+          .sort((a,b)=>(a.category_name||'').localeCompare(b.category_name||'')||a.position-b.position||a.name.localeCompare(b.name));
+      }
+    }
+  }
+  const rows=await db.query('SELECT discord_channel_id,channel_name FROM channel_policies ORDER BY lower(coalesce(channel_name,discord_channel_id))');
+  return rows.rows.map(row=>{
+    const metadata=getCachedDiscordChannelMetadata(String(row.discord_channel_id));
+    return {id:String(row.discord_channel_id),name:metadata?.name||row.channel_name||String(row.discord_channel_id),type:metadata?.type||'Text-based',category_name:metadata?.category_name||null,is_thread:metadata?.is_thread||false,position:0};
+  }).filter(row=>!row.is_thread&&['Text','Announcement','Forum','Media','Text-based'].includes(row.type));
+}
+
 export async function adminRoutes(app: FastifyInstance) {
   app.register(async (admin) => {
     admin.addHook('onRequest', requireApiKey);
@@ -861,22 +890,12 @@ export async function adminRoutes(app: FastifyInstance) {
 
     // Issue settings
     admin.get('/api/issues/settings', async () => {
-      const [categories, automation, templates, channelRows] = await Promise.all([
+      const [categories, automation, templates, channels] = await Promise.all([
         db.query('SELECT * FROM issue_categories ORDER BY sort_order, label'),
         db.query('SELECT * FROM issue_automation_settings WHERE id=1'),
         db.query(`SELECT * FROM issue_status_templates ORDER BY CASE status WHEN 'new' THEN 1 WHEN 'acknowledged' THEN 2 WHEN 'investigating' THEN 3 WHEN 'fix_in_progress' THEN 4 WHEN 'testing' THEN 5 WHEN 'monitoring' THEN 6 WHEN 'resolved' THEN 7 ELSE 8 END`),
-        db.query('SELECT discord_channel_id,channel_name FROM channel_policies ORDER BY lower(coalesce(channel_name,discord_channel_id))')
+        discordIssueDestinations()
       ]);
-      const channels = channelRows.rows.map(row => {
-        const metadata = getCachedDiscordChannelMetadata(String(row.discord_channel_id));
-        return {
-          id: String(row.discord_channel_id),
-          name: metadata?.name || row.channel_name || String(row.discord_channel_id),
-          type: metadata?.type || 'Text-based',
-          category_name: metadata?.category_name || null,
-          is_thread: metadata?.is_thread || false
-        };
-      }).filter(row => !row.is_thread && ['Text','Announcement','Forum','Media','Text-based'].includes(row.type));
       return { categories: categories.rows, automation: automation.rows[0] || null, templates: templates.rows, channels };
     });
 

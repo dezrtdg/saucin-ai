@@ -22,7 +22,7 @@ await app.register(adminRoutes);
 await app.register(liveModerationRoutes);
 await app.register(suggestionRoutes);
 
-app.get('/', async () => ({ service: 'Saucin AI API', version: '1.6.2' }));
+app.get('/', async () => ({ service: 'Saucin AI API', version: '1.6.3' }));
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
 startModerationNoticeEnricher();
