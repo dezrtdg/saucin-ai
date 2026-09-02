@@ -77,6 +77,16 @@ function candidateButtons(candidateId: number) {
   )];
 }
 
+function suggestionConfirmationButtons(suggestionId:number){
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`suggestion:confirm:${suggestionId}`)
+      .setLabel('Confirm suggestion')
+      .setEmoji('✅')
+      .setStyle(ButtonStyle.Primary)
+  )];
+}
+
 function suggestionButtons(suggestionId:number,threadId?:string|null) {
   const row=new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`suggestion:support:${suggestionId}`).setLabel('I support this idea').setStyle(ButtonStyle.Secondary)
@@ -753,27 +763,29 @@ async function handleMessage(message: Message) {
     });
     let suggestion = recorded.suggestion;
     if (suggestion) {
-      const originThreadId=(message.channel as any).isThread?.()?message.channelId:null;
-      await ensureSuggestionDiscordThread(Number(suggestion.id),originThreadId)
-        .catch(error=>console.warn('[suggestions] unable to create Discord forum discussion',error));
       suggestion=await getSuggestion(Number(suggestion.id))||suggestion;
-      await syncSuggestionDiscordPost(Number(suggestion.id)).catch(()=>false);
+      if(suggestion.discord_thread_id){
+        await syncSuggestionDiscordPost(Number(suggestion.id)).catch(()=>false);
+      }
       matchedSources = [{
         type:'suggestion',id:suggestion.public_id||suggestion.id,title:suggestion.title,status:suggestion.status,
         supporters:Number(suggestion.unique_supporters||suggestion.mention_count||0),
-        match:recorded.match,discord_thread_id:suggestion.discord_thread_id||null
+        match:recorded.match,discord_thread_id:suggestion.discord_thread_id||null,
+        awaiting_confirmation:!suggestion.discord_thread_id
       }];
       if (suggestionReplyAllowed || mentionOverride) {
         const publicId=suggestion.public_id||`SUG-${String(suggestion.id).padStart(4,'0')}`;
         const status=String(suggestion.status||'candidate').replaceAll('_',' ');
-        if (recorded.created) {
-          responseText=`I logged that as **${publicId} · ${suggestion.title}** and opened a dedicated discussion for details, links, and community feedback.`;
-        } else if (recorded.supporterAdded) {
-          responseText=`That matches **${publicId} · ${suggestion.title}**. I added your support to the existing suggestion. Current status: **${status}**.`;
+        if(!suggestion.discord_thread_id){
+          responseText=`Okay, this one might have some sauce 👀\n\n**${publicId} · ${suggestion.title}**\n\nDid I understand the idea correctly? Confirm it below and I’ll put it on the suggestion board so everyone can add details, examples, and links.`;
+          responseComponents=suggestionConfirmationButtons(Number(suggestion.id));
+        }else if (recorded.supporterAdded) {
+          responseText=`This idea is already cooking 🌶️\n\nYour support was added to **${publicId} · ${suggestion.title}**. Current status: **${status}**.`;
+          responseComponents=suggestionButtons(Number(suggestion.id),suggestion.discord_thread_id);
         } else {
-          responseText=`That matches **${publicId} · ${suggestion.title}**. You're already counted as supporting it. Current status: **${status}**.`;
+          responseText=`You’re already backing **${publicId} · ${suggestion.title}**. Current status: **${status}**.`;
+          responseComponents=suggestionButtons(Number(suggestion.id),suggestion.discord_thread_id);
         }
-        responseComponents=suggestionButtons(Number(suggestion.id),suggestion.discord_thread_id||null);
       }
     }
   }
@@ -902,6 +914,36 @@ export async function startDiscord() {
       return;
     }
 
+    if(parts[0]==='suggestion'&&parts[1]==='confirm'){
+      void (async()=>{
+        const suggestion=await getSuggestion(id);
+        if(!suggestion) return interaction.reply({content:'That suggestion is no longer available.',ephemeral:true});
+        await interaction.deferUpdate();
+        const threadId=await ensureSuggestionDiscordThread(id).catch(error=>{
+          console.warn('[suggestions] confirmation could not create forum discussion',error);
+          return null;
+        });
+        const current=await getSuggestion(id)||suggestion;
+        const publicId=current.public_id||`SUG-${id}`;
+        if(!threadId){
+          return interaction.editReply({
+            content:`I saved **${publicId} · ${current.title}**, but I can’t plate it on the suggestion board yet because the Discord forum has not been configured. Staff can finish that from **Settings → Suggestions**.`,
+            components:suggestionConfirmationButtons(id),
+            allowedMentions:{parse:[]}
+          });
+        }
+        await db.query(`
+          INSERT INTO suggestion_updates (suggestion_id,update_type,note,created_by)
+          VALUES ($1,'confirmed','Confirmed from the Discord suggestion prompt.',$2)`,[id,interaction.user.id]).catch(()=>null);
+        return interaction.editReply({
+          content:`Now we’re cooking 🌶️\n\n**${publicId} · ${current.title}** is live on the suggestion board. Open the discussion to add details, examples, links, or anything else that helps build out the idea.`,
+          components:suggestionButtons(id,threadId),
+          allowedMentions:{parse:[]}
+        });
+      })().catch(error=>console.error('[discord] suggestion confirmation button failed',error));
+      return;
+    }
+
     if (parts[0] === 'suggestion' && parts[1] === 'support') {
       void (async()=>{
         const suggestion=await getSuggestion(id);
@@ -910,8 +952,8 @@ export async function startDiscord() {
         await syncSuggestionDiscordPost(id).catch(()=>false);
         return interaction.reply({
           content:added
-            ? `Your support was added to **${suggestion.public_id||`SUG-${id}`} · ${suggestion.title}**.`
-            : `You're already counted as supporting **${suggestion.public_id||`SUG-${id}`} · ${suggestion.title}**.`,
+            ? `Good call — your support is now counted on **${suggestion.public_id||`SUG-${id}`} · ${suggestion.title}**. 🌶️`
+            : `You’re already backing **${suggestion.public_id||`SUG-${id}`} · ${suggestion.title}**.`,
           ephemeral:true
         });
       })().catch(error=>console.error('[discord] suggestion support button failed',error));
