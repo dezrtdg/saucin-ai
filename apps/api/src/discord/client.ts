@@ -26,10 +26,12 @@ import {
 import { addIssueReport, confirmIssueCandidate, findKnownIssue, getIssue, getIssueAutomationSettings, getIssuePublicMessage, processIssueThreadMessage, recordIssueCandidate } from '../services/issues.js';
 import {
   addSuggestionSupport,
+  dismissSuggestionCandidate,
   getSuggestion,
   getSuggestionAutomationSettings,
   getSuggestionPublicMessage,
   processSuggestionThreadMessage,
+  refineSuggestionForPublishing,
   recordSuggestion
 } from '../services/suggestions.js';
 import { processModerationMessage, recordModerationIngressDiagnostic, type ModerationDetection } from '../services/moderation.js';
@@ -84,13 +86,18 @@ function candidateButtons(candidateId: number) {
   )];
 }
 
-function suggestionConfirmationButtons(suggestionId:number){
+function suggestionConfirmationButtons(suggestionId:number,submitterId:string){
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`suggestion:confirm:${suggestionId}`)
+      .setCustomId(`suggestion:confirm:${suggestionId}:${submitterId}`)
       .setLabel('Confirm suggestion')
       .setEmoji('✅')
-      .setStyle(ButtonStyle.Primary)
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`suggestion:ignore:${suggestionId}:${submitterId}`)
+      .setLabel('Ignore suggestion')
+      .setEmoji('✖️')
+      .setStyle(ButtonStyle.Secondary)
   )];
 }
 
@@ -199,6 +206,71 @@ export function getCachedDiscordForumTags(channelId: string): DiscordForumTagMet
     emoji:tag.emoji?.name ? String(tag.emoji.name) : tag.emoji?.id ? String(tag.emoji.id) : null,
     moderated:Boolean(tag.moderated)
   }));
+}
+
+function normalizeForumTag(value:unknown){
+  return String(value||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+}
+
+const suggestionStatusTags:Record<string,string[]>={
+  candidate:['new idea','new','submitted'],
+  reviewing:['under review','reviewing','review'],
+  accepted:['accepted','approved'],
+  planned:['planned','roadmap'],
+  shipped:['released','shipped','live'],
+  declined:['declined','not planned'],
+  duplicate:['duplicate']
+};
+
+const suggestionCategoryTags=[
+  {key:'roleplay',signals:['roleplay','rp','character'],tags:['roleplay','rp']},
+  {key:'jobs-economy',signals:['job','career','business','economy','pay','builder','construction'],tags:['jobs economy','jobs','economy','business']},
+  {key:'vehicles',signals:['vehicle','car','truck','motorcycle','garage','dealership'],tags:['vehicles','vehicle','cars']},
+  {key:'housing-map',signals:['house','housing','apartment','building','map','interior','location'],tags:['housing map','housing','map']},
+  {key:'police-ems',signals:['police','leo','ems','fire','medical','law enforcement'],tags:['police ems','police','ems','leo']},
+  {key:'crime',signals:['crime','criminal','robbery','heist','gang','drug'],tags:['crime','criminal']},
+  {key:'items-inventory',signals:['item','inventory','weapon','equipment','storage'],tags:['items inventory','items','inventory']},
+  {key:'quality-of-life',signals:['quality of life','qol','convenience','ui','menu'],tags:['quality of life','qol']},
+  {key:'community',signals:['community','event','contest','discord'],tags:['community','events']},
+  {key:'general',signals:[],tags:['general']}
+];
+
+function suggestionAppliedTagIds(
+  suggestion:any,
+  forum:any,
+  settings:Awaited<ReturnType<typeof getSuggestionAutomationSettings>>
+){
+  const tags:{id:string;name:string}[]=(Array.isArray(forum?.availableTags)?forum.availableTags:[]).map((tag:any)=>({
+    id:String(tag.id),name:normalizeForumTag(tag.name)
+  }));
+  if(!tags.length) return [];
+  const chosen:string[]=[];
+  const configured=settings.forum_tag_id&&tags.some(tag=>tag.id===settings.forum_tag_id)
+    ? settings.forum_tag_id
+    : null;
+  const status=String(suggestion.status||'candidate');
+  const statusAliases=suggestionStatusTags[status]||[];
+  const statusTag=tags.find(tag=>statusAliases.some(alias=>tag.name===alias||tag.name.includes(alias)));
+  if(status==='candidate'&&configured) chosen.push(configured);
+  else if(statusTag) chosen.push(statusTag.id);
+
+  const category=normalizeForumTag(suggestion.category);
+  const context=normalizeForumTag([
+    suggestion.title,suggestion.summary,suggestion.community_context,...(suggestion.related_terms||[])
+  ].filter(Boolean).join(' '));
+  let rule=suggestionCategoryTags.find(item=>normalizeForumTag(item.key)===category||item.tags.some(tag=>category.includes(tag)));
+  if(!rule){
+    const scored=suggestionCategoryTags
+      .map(item=>({...item,score:item.signals.filter(signal=>context.includes(signal)).length}))
+      .sort((a,b)=>b.score-a.score)[0];
+    rule=scored&&scored.score>0?scored:suggestionCategoryTags.find(item=>item.key==='general');
+  }
+  const categoryTag=rule
+    ? tags.find(tag=>rule!.tags.some(alias=>tag.name===alias||tag.name.includes(alias)))
+    : null;
+  if(categoryTag&&!chosen.includes(categoryTag.id)) chosen.push(categoryTag.id);
+  if(!chosen.length) chosen.push(configured||tags[0].id);
+  return chosen.slice(0,5);
 }
 
 export async function syncDiscordChannels() {
@@ -509,18 +581,13 @@ export async function ensureSuggestionDiscordThread(suggestionId:number,originTh
     if(forum.type!==ChannelType.GuildForum&&forum.type!==ChannelType.GuildMedia){
       throw new Error('The configured suggestions destination must be a Discord Forum or Media channel.');
     }
-    const availableTagIds=(Array.isArray((forum as any).availableTags)?(forum as any).availableTags:[])
-      .map((tag:any)=>String(tag.id));
-    const configuredTag=settings.forum_tag_id&&availableTagIds.includes(settings.forum_tag_id)
-      ? settings.forum_tag_id
-      : null;
-    const appliedTag=configuredTag||availableTagIds[0]||null;
-    if((forum as any).flags?.has?.('RequireTag')&&!appliedTag){
+    const appliedTags=suggestionAppliedTagIds(suggestion,forum,settings);
+    if((forum as any).flags?.has?.('RequireTag')&&!appliedTags.length){
       throw new Error('Discord requires a tag for this forum, but the channel has no available tags.');
     }
     thread=await (forum as any).threads.create({
       name:suggestionThreadName(suggestion),
-      appliedTags:appliedTag?[appliedTag]:[],
+      appliedTags,
       message:{
         content:await getSuggestionPublicMessage(suggestion),
         components:suggestionButtons(suggestionId)
@@ -562,6 +629,17 @@ export async function syncSuggestionDiscordPost(suggestionId:number){
   }
   if((channel as any).isThread?.()&&typeof (channel as any).setName==='function'){
     await (channel as any).setName(suggestionThreadName(suggestion),`Saucin AI synchronized ${suggestion.public_id||suggestion.id}`).catch(()=>null);
+    const parent=(channel as any).parent||(
+      (channel as any).parentId
+        ? await discord.channels.fetch(String((channel as any).parentId)).catch(()=>null)
+        : null
+    );
+    const appliedTags=suggestionAppliedTagIds(suggestion,parent,settings);
+    if(appliedTags.length&&typeof (channel as any).setAppliedTags==='function'){
+      await (channel as any).setAppliedTags(appliedTags,`Saucin AI categorized ${suggestion.public_id||suggestion.id}`).catch((error:unknown)=>
+        console.warn('[suggestions] unable to synchronize forum tags',error)
+      );
+    }
   }
   return true;
 }
@@ -662,6 +740,7 @@ async function handleMessage(message: Message) {
     });
     const suggestion=recorded.suggestion;
     if(suggestion){
+      await refineSuggestionForPublishing(Number(suggestion.id));
       const threadId=await ensureSuggestionDiscordThread(Number(suggestion.id),message.channelId)
         .catch(error=>{console.warn('[suggestions] unable to link forum submission',error);return null;});
       const primary=await getSuggestion(Number(suggestion.id))||suggestion;
@@ -807,8 +886,8 @@ async function handleMessage(message: Message) {
         const publicId=suggestion.public_id||`SUG-${String(suggestion.id).padStart(4,'0')}`;
         const status=String(suggestion.status||'candidate').replaceAll('_',' ');
         if(!suggestion.discord_thread_id){
-          responseText=`Okay, this one might have some sauce 👀\n\n**${publicId} · ${suggestion.title}**\n\nDid I understand the idea correctly? Confirm it below and I’ll put it on the suggestion board so everyone can add details, examples, and links.`;
-          responseComponents=suggestionConfirmationButtons(Number(suggestion.id));
+          responseText=`Okay, this one might have some sauce 👀\n\n**${publicId} · ${suggestion.title}**\n\nDid I understand the idea correctly? Confirm it and I’ll organize it on the suggestion board, or ignore it if I read the room wrong.`;
+          responseComponents=suggestionConfirmationButtons(Number(suggestion.id),message.author.id);
         }else if (recorded.supporterAdded) {
           responseText=`This idea is already cooking 🌶️\n\nYour support was added to **${publicId} · ${suggestion.title}**. Current status: **${status}**.`;
           responseComponents=suggestionButtons(Number(suggestion.id),suggestion.discord_thread_id);
@@ -944,11 +1023,33 @@ export async function startDiscord() {
       return;
     }
 
+    if(parts[0]==='suggestion'&&parts[1]==='ignore'){
+      void (async()=>{
+        const submitterId=parts[3]||'';
+        if(submitterId&&interaction.user.id!==submitterId){
+          return interaction.reply({content:'This decision belongs to the person who shared the idea.',ephemeral:true});
+        }
+        await interaction.deferUpdate();
+        await dismissSuggestionCandidate(id,interaction.user.id).catch(error=>
+          console.warn('[suggestions] unable to dismiss suggestion candidate',error)
+        );
+        await interaction.message.delete().catch(async()=>{
+          await interaction.editReply({content:'No worries — I’ll leave this one alone. 🤐',components:[],allowedMentions:{parse:[]}});
+        });
+      })().catch(error=>console.error('[discord] suggestion ignore button failed',error));
+      return;
+    }
+
     if(parts[0]==='suggestion'&&parts[1]==='confirm'){
       void (async()=>{
+        const submitterId=parts[3]||'';
+        if(submitterId&&interaction.user.id!==submitterId){
+          return interaction.reply({content:'This decision belongs to the person who shared the idea.',ephemeral:true});
+        }
         const suggestion=await getSuggestion(id);
         if(!suggestion) return interaction.reply({content:'That suggestion is no longer available.',ephemeral:true});
         await interaction.deferUpdate();
+        await refineSuggestionForPublishing(id);
         let creationError:unknown=null;
         const threadId=await ensureSuggestionDiscordThread(id).catch(error=>{
           creationError=error;
@@ -966,7 +1067,7 @@ export async function startDiscord() {
           if(creationError) console.warn('[suggestions] forum creation needs staff attention',creationError);
           return interaction.editReply({
             content,
-            components:suggestionConfirmationButtons(id),
+            components:suggestionConfirmationButtons(id,submitterId||interaction.user.id),
             allowedMentions:{parse:[]}
           });
         }
@@ -974,7 +1075,7 @@ export async function startDiscord() {
           INSERT INTO suggestion_updates (suggestion_id,update_type,note,created_by)
           VALUES ($1,'confirmed','Confirmed from the Discord suggestion prompt.',$2)`,[id,interaction.user.id]).catch(()=>null);
         return interaction.editReply({
-          content:`Now we’re cooking 🌶️\n\n**${publicId} · ${current.title}** is live on the suggestion board. Open the discussion to add details, examples, links, or anything else that helps build out the idea.`,
+          content:`Now we’re cooking 🌶️\n\n**${publicId} · ${current.title}** is live on the suggestion board. Open the discussion and tell me how you picture it working. Add examples, links, screenshots, or anything else that helps explain the idea — I’ll keep the dashboard organized as the details develop.`,
           components:suggestionButtons(id,threadId),
           allowedMentions:{parse:[]}
         });
