@@ -159,6 +159,69 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
+container_for_service() {
+  case "$1" in
+    api) echo "saucin-ai-api" ;;
+    dashboard) echo "saucin-ai-dashboard" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Capture the images currently backing the Saucin AI containers. Docker Compose
+# creates a new image on rebuild and the replaced image can show up in Unraid as
+# an orphan/dangling image. We keep these exact IDs so only Saucin AI's superseded
+# images are considered for cleanup after a successful deployment.
+declare -A OLD_IMAGES=()
+for service in "${SERVICES[@]}"; do
+  container="$(container_for_service "$service")"
+  image_id="$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null || true)"
+  if [[ -n "$image_id" ]]; then
+    OLD_IMAGES["$service"]="$image_id"
+  fi
+done
+
+cleanup_old_images() {
+  if [[ ${#SERVICES[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  echo
+  echo "==> Cleaning superseded Saucin AI images"
+
+  local removed=0
+  for service in "${SERVICES[@]}"; do
+    local old_image="${OLD_IMAGES[$service]:-}"
+    [[ -z "$old_image" ]] && continue
+
+    local container
+    container="$(container_for_service "$service")"
+    local new_image
+    new_image="$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null || true)"
+
+    # Never remove the image the new container is actually using.
+    if [[ -z "$new_image" || "$old_image" == "$new_image" ]]; then
+      continue
+    fi
+
+    # If any container still references the old image, leave it alone.
+    if [[ -n "$(docker ps -a -q --filter "ancestor=$old_image" 2>/dev/null)" ]]; then
+      echo "Keeping old $service image because a container still references it: ${old_image:0:19}"
+      continue
+    fi
+
+    if docker image rm "$old_image" >/dev/null 2>&1; then
+      echo "Removed old $service image: ${old_image:0:19}"
+      removed=$((removed+1))
+    else
+      echo "Could not remove old $service image; Docker may still be using it: ${old_image:0:19}"
+    fi
+  done
+
+  if [[ "$removed" -eq 0 ]]; then
+    echo "No superseded Saucin AI images needed removal."
+  fi
+}
+
 rollback() {
   local reason="$1"
   echo
@@ -219,12 +282,7 @@ if [[ ${#SERVICES[@]} -gt 0 ]]; then
 
   FAILED_CONTAINER=""
   for service in "${SERVICES[@]}"; do
-    case "$service" in
-      api) container="saucin-ai-api" ;;
-      dashboard) container="saucin-ai-dashboard" ;;
-      *) continue ;;
-    esac
-
+    container="$(container_for_service "$service")"
     state="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)"
     if [[ "$state" != "running" ]]; then
       FAILED_CONTAINER="$container ($state)"
@@ -236,6 +294,8 @@ if [[ ${#SERVICES[@]} -gt 0 ]]; then
     docker compose logs --tail=100 "${SERVICES[@]}" || true
     rollback "Container did not remain running: $FAILED_CONTAINER"
   fi
+
+  cleanup_old_images
 fi
 
 echo
