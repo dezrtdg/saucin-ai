@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ChannelType } from 'discord.js';
 import { db } from '../db.js';
 import { env } from '../env.js';
-import { applyTicketPunishment, discord, ensureIssueDiscordThread, getCachedDiscordChannelMetadata, postIssueStatusUpdate, publishTicketPanel, recoverDiscordConversationContext, reopenDiscordTicket, reverseTicketPunishment, syncDiscordChannels, syncIssueDiscordPost } from '../discord/client.js';
+import { applyIssueDiscordLifecycle, applyTicketPunishment, discord, ensureIssueDiscordThread, getCachedDiscordChannelMetadata, postIssueStatusUpdate, publishTicketPanel, recoverDiscordConversationContext, reopenDiscordTicket, reverseTicketPunishment, syncDiscordChannels, syncIssueDiscordPost } from '../discord/client.js';
 import { invalidateBotBehaviorSettingsCache } from '../services/botSettings.js';
 import { backfillKnowledgeEmbeddings, buildKnowledgeDraft, deriveKnowledgeGapQuestion, improveKnowledgeRetrieval, refreshKnowledgeEmbedding } from '../services/knowledge.js';
 import { buildIssueDraft, linkCandidateToIssue, refreshIssueEmbedding, setIssueObservationStatus } from '../services/issues.js';
@@ -1462,10 +1462,14 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
           [params.id,type,fromValue,toValue,note,'dashboard']);
       }
       await refreshIssueEmbedding(params.id).catch(error => request.log.warn({ error }, 'issue embedding refresh failed'));
+      if(previous.status==='resolved'&&body.status!=='resolved'){
+        await applyIssueDiscordLifecycle(params.id,body.status).catch(error=>request.log.warn({error},'issue Discord discussion reopen failed'));
+      }
       await ensureIssueDiscordThread(params.id).catch(error => request.log.warn({ error }, 'issue Discord ticket creation failed'));
       await syncIssueDiscordPost(params.id).catch(error => request.log.warn({ error }, 'issue Discord status sync failed'));
       if (previous.status !== body.status) {
         await postIssueStatusUpdate(params.id, String(previous.status), body.status).catch(error => request.log.warn({ error }, 'issue Discord status update post failed'));
+        if(body.status==='resolved') await applyIssueDiscordLifecycle(params.id,body.status).catch(error=>request.log.warn({error},'resolved issue Discord lifecycle failed'));
       }
       return (await db.query('SELECT * FROM issues WHERE id=$1',[params.id])).rows[0];
     });

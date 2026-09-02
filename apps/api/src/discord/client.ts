@@ -583,10 +583,82 @@ export async function postIssueStatusUpdate(issueId: number, fromStatus: string,
   const channel = await discord.channels.fetch(String(issue.discord_thread_id)).catch(() => null);
   if (!channel || !channel.isTextBased() || channel.isDMBased()) return false;
   await (channel as any).send({
-    content: `**Status updated:** ${fromStatus.replaceAll('_',' ')} → **${toStatus.replaceAll('_',' ')}**\n\n${await getIssuePublicMessage(issue)}`,
+    content: `**Status updated:** ${fromStatus.replaceAll('_',' ')} → **${toStatus.replaceAll('_',' ')}**\n\n${await getIssuePublicMessage(issue)}${toStatus==='resolved'?'\n\n🔒 This discussion is now locked. It will be removed from Discord in **7 days**, while the complete issue record remains available to staff.':''}`,
     allowedMentions: { parse: [] }
   });
   return true;
+}
+
+async function setIssueThreadLocked(issue:any,locked:boolean){
+  if(!issue?.discord_thread_id||!discord.isReady()) return false;
+  const channel=await discord.channels.fetch(String(issue.discord_thread_id)).catch(()=>null) as any;
+  if(!channel){
+    await db.query(`UPDATE issues SET discord_thread_id=NULL,discord_status_channel_id=NULL,discord_status_message_id=NULL,discord_cleanup_at=NULL,discord_locked_at=NULL,updated_at=NOW() WHERE id=$1`,[issue.id]);
+    return false;
+  }
+  if(!channel.isThread?.()) return false;
+  if(locked){
+    try{
+      await channel.setLocked(true,`Resolved ${issue.public_id||`BUG-${issue.id}`} retention period`);
+      await channel.setArchived(true,`Resolved ${issue.public_id||`BUG-${issue.id}`} retention period`);
+    }catch{return false;}
+    await db.query('UPDATE issues SET discord_locked_at=NOW(),updated_at=NOW() WHERE id=$1',[issue.id]);
+  }else{
+    const reason=`Reopened ${issue.public_id||`BUG-${issue.id}`}`;
+    await channel.setArchived(false,reason).catch(()=>null);
+    await channel.setLocked(false,reason).catch(()=>null);
+  }
+  return true;
+}
+
+export async function applyIssueDiscordLifecycle(issueId:number,status:string){
+  const issue=await getIssue(issueId);
+  if(!issue) return false;
+  if(status==='resolved'){
+    const scheduled=await db.query(`
+      UPDATE issues SET discord_cleanup_at=NOW()+INTERVAL '7 days',discord_locked_at=NULL,updated_at=NOW()
+       WHERE id=$1 RETURNING *`,[issueId]);
+    return setIssueThreadLocked(scheduled.rows[0],true);
+  }
+  await db.query('UPDATE issues SET discord_cleanup_at=NULL,discord_locked_at=NULL,updated_at=NOW() WHERE id=$1',[issueId]);
+  return setIssueThreadLocked(issue,false);
+}
+
+async function runIssueDiscordCleanup(){
+  const result=await db.query(`
+    SELECT id,public_id,discord_thread_id,discord_status_channel_id,discord_status_message_id,
+           discord_cleanup_at,discord_locked_at
+      FROM issues
+     WHERE status='resolved' AND discord_cleanup_at IS NOT NULL
+     ORDER BY discord_cleanup_at ASC LIMIT 100`);
+  for(const issue of result.rows){
+    if(!issue.discord_thread_id){
+      await db.query('UPDATE issues SET discord_cleanup_at=NULL,discord_locked_at=NULL WHERE id=$1',[issue.id]);
+      continue;
+    }
+    if(new Date(issue.discord_cleanup_at).getTime()>Date.now()){
+      if(!issue.discord_locked_at) await setIssueThreadLocked(issue,true).catch(error=>console.error('[issues] unable to lock resolved discussion',error));
+      continue;
+    }
+    const thread=await discord.channels.fetch(String(issue.discord_thread_id)).catch(()=>null) as any;
+    let removed=!thread;
+    if(thread) removed=await thread.delete(`Seven-day retention completed for ${issue.public_id||`BUG-${issue.id}`}`).then(()=>true).catch(()=>false);
+    if(!removed) continue;
+    if(issue.discord_status_channel_id&&String(issue.discord_status_channel_id)!==String(issue.discord_thread_id)&&issue.discord_status_message_id){
+      const parent=await discord.channels.fetch(String(issue.discord_status_channel_id)).catch(()=>null) as any;
+      if(parent?.isTextBased?.()){
+        const message=await parent.messages.fetch(String(issue.discord_status_message_id)).catch(()=>null);
+        if(message) await message.delete().catch(()=>null);
+      }
+    }
+    await db.query(`
+      UPDATE issues
+         SET discord_thread_id=NULL,discord_status_channel_id=NULL,discord_status_message_id=NULL,
+             discord_cleanup_at=NULL,discord_locked_at=NULL,updated_at=NOW()
+       WHERE id=$1`,[issue.id]);
+    await db.query(`INSERT INTO issue_updates (issue_id,update_type,from_value,to_value,note,created_by)
+      VALUES ($1,'discord_cleanup',$2,NULL,'Resolved Discord discussion removed after the seven-day retention period.','Saucin AI')`,[issue.id,String(issue.discord_thread_id)]);
+  }
 }
 
 export async function ensureSuggestionDiscordThread(suggestionId:number,originThreadId?:string|null){
@@ -1181,6 +1253,7 @@ async function runTicketMaintenance(){
       await reverseTicketPunishment(Number(punishment.id),{userId:'saucin-ai-expiry',name:'Saucin AI'},'Scheduled punishment duration completed.','expired')
         .catch(error=>console.error('[tickets] automatic punishment expiry failed',error));
     }
+    await runIssueDiscordCleanup().catch(error=>console.error('[issues] resolved discussion cleanup failed',error));
   }finally{ticketMaintenanceRunning=false;}
 }
 
