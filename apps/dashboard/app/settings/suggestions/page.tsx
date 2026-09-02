@@ -43,7 +43,7 @@ export default async function SuggestionSettingsPage(){
         <div className="formGrid">
           <label className="field fieldFull"><span>Suggestions forum</span><select className="input select" name="forum_channel_id" defaultValue={a?.forum_channel_id||''}><option value="">Not configured</option>{data.channels.map(channel=><option value={channel.id} key={channel.id}>{channel.category_name?`${channel.category_name} → `:''}#{channel.name} · {channel.type}</option>)}</select><small>Only Discord Forum and Media channels appear here. Refresh channels from the Channels page if your forum is missing.</small></label>
           {[
-            ['auto_create_forum_posts','Automatically create forum discussions','New Discord-detected and dashboard-created ideas receive their own forum post.'],
+            ['auto_create_forum_posts','Create confirmed forum discussions','Confirmed Discord-detected ideas and dashboard-created ideas receive their own forum post.'],
             ['collect_thread_details','Collect discussion replies','Save added examples, links, screenshots, questions, and other community context.'],
             ['ai_summarize_thread','AI-organized community context','Maintain a concise dashboard summary of useful additions without overwriting original messages.'],
             ['edit_original_status_message','Keep the main forum post current','Update the bot’s main post when the title, summary, category, status, or support count changes.'],
@@ -58,8 +58,8 @@ export default async function SuggestionSettingsPage(){
     <section className="panel">
       <div className="panelTitle"><div><h2>How the workflow behaves</h2><p>Each idea stays connected across Discord and the dashboard.</p></div></div>
       <div className="settingsList">
-        <div className="settingsEditor"><div className="settingsKey">1 · Detect</div><p>A newly mentioned idea is clustered against existing suggestions. Repeated ideas add support instead of opening duplicates.</p></div>
-        <div className="settingsEditor"><div className="settingsKey">2 · Discuss</div><p>The linked forum post becomes the place for examples, links, screenshots, questions, and community feedback.</p></div>
+        <div className="settingsEditor"><div className="settingsKey">1 · Detect and confirm</div><p>A newly mentioned idea is clustered against existing suggestions, then the bot asks the player to confirm its summary before publishing it.</p></div>
+        <div className="settingsEditor"><div className="settingsKey">2 · Discuss</div><p>Confirmation creates the forum post and reveals its link. The discussion becomes the place for examples, links, screenshots, questions, and community feedback.</p></div>
         <div className="settingsEditor"><div className="settingsKey">3 · Review</div><p>Staff can expand the idea with AI, edit the clean summary, and preserve every original message for reference.</p></div>
         <div className="settingsEditor"><div className="settingsKey">4 · Update</div><p>Status changes synchronize to the main post and leave a visible update in that suggestion’s discussion.</p></div>
       </div>
