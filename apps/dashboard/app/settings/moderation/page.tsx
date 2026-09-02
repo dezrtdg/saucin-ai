@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
+import PendingActionButton from '../../../components/PendingActionButton';
 import { saveModerationRuleAction, saveModerationSettingsAction } from './actions';
 import styles from '../../moderation/moderation.module.css';
 
@@ -68,7 +69,7 @@ export default async function ModerationSettingsPage(){
           <label className="settingToggleCard"><input type="checkbox" name="diagnostics_enabled" defaultChecked={s.diagnostics_enabled}/><span><strong>Enable moderation diagnostics</strong><small>Temporarily record why each Discord message was processed or skipped. Keep this off when you are done tuning.</small></span></label>
           <div className={`${styles.full}`}><div className="settingsSubsection"><h3>Globally exempt Discord roles</h3><p>Members with any selected role are skipped before AI analysis.</p></div><div className={styles.checkGrid}>{data.roles.map(r=><label className={styles.check} key={r.id}><input type="checkbox" name="exempt_role_ids" value={r.id} defaultChecked={s.exempt_role_ids.includes(r.id)}/><span>{r.name}</span></label>)}</div></div>
         </div>
-        <div className="formActions"><p>Switching away from Live mode cancels any live actions that have not started yet.</p><button className="button primary" type="submit">Save moderation settings</button></div>
+        <div className="formActions"><p>Switching away from Live mode cancels any live actions that have not started yet.</p><PendingActionButton idleLabel="Save moderation settings" pendingLabel="Saving moderation settings…" className="button primary"/></div>
       </form>
     </section>
 
@@ -107,7 +108,7 @@ export default async function ModerationSettingsPage(){
               <div className={styles.full}><div className="settingsSubsection"><h3>Channel scope</h3><p>Leave all unchecked to use every monitored channel.</p></div><div className={styles.checkGrid}>{monitored.length?monitored.map(c=><label className={styles.check} key={c.id}><input type="checkbox" name="channel_ids" value={c.id} defaultChecked={rule.channel_ids.includes(c.id)}/><span>#{c.name||c.id}</span></label>):<span>No monitored channels yet.</span>}</div></div>
               <div className={styles.full}><div className="settingsSubsection"><h3>Additional exempt roles</h3><p>These apply only to this rule and are combined with global exemptions.</p></div><div className={styles.checkGrid}>{data.roles.map(r=><label className={styles.check} key={r.id}><input type="checkbox" name="exempt_role_ids" value={r.id} defaultChecked={rule.exempt_role_ids.includes(r.id)}/><span>{r.name}</span></label>)}</div></div>
             </div>
-            <div className="formActions"><p>The verified rule text remains in the Knowledge Library; moderation settings do not rewrite policy or the standard ladder.</p><button className="button primary" type="submit">Save rule settings</button></div>
+            <div className="formActions"><p>The verified rule text remains in the Knowledge Library; moderation settings do not rewrite policy or the standard ladder.</p><PendingActionButton idleLabel="Save rule settings" pendingLabel="Saving rule settings…" className="button primary"/></div>
           </form>
         </div>
       </details>):<div className={styles.empty}>Publish a Discord Rule before configuring moderation detection.</div>}
