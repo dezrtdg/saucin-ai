@@ -24,6 +24,7 @@ import {
   searchKnowledge
 } from '../services/knowledge.js';
 import { addIssueReport, confirmIssueCandidate, findKnownIssue, getIssue, getIssueAutomationSettings, getIssuePublicMessage, processIssueThreadMessage, recordIssueCandidate } from '../services/issues.js';
+import { addSuggestionSupport, getSuggestion, recordSuggestion } from '../services/suggestions.js';
 import { processModerationMessage, recordModerationIngressDiagnostic, type ModerationDetection } from '../services/moderation.js';
 
 export const discord = new Client({
@@ -66,6 +67,12 @@ function candidateButtons(candidateId: number) {
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`candidate:report:${candidateId}`).setLabel('Report this issue').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`candidate:same:${candidateId}`).setLabel("I'm having this too").setStyle(ButtonStyle.Secondary)
+  )];
+}
+
+function suggestionButtons(suggestionId:number) {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`suggestion:support:${suggestionId}`).setLabel('I support this idea').setStyle(ButtonStyle.Secondary)
   )];
 }
 
@@ -465,8 +472,7 @@ async function handleMessage(message: Message) {
   const classificationInput = explicitContext?.aiInput ?? message.content;
 
   const storedId = await storeMessage(message, explicitContext);
-  // Moderation v1.3 is observe-only and runs independently of support replies.
-  // It never warns, deletes, times out, or otherwise acts on the member in this release.
+  // Moderation runs independently of support replies and may enforce according to the current live-mode configuration.
   if (policy.monitor_messages) {
     const memberRoleIds = message.member ? [...message.member.roles.cache.keys()] : [];
     void processModerationMessage({
@@ -480,7 +486,7 @@ async function handleMessage(message: Message) {
       content: message.content,
       memberRoleIds
     }).then(detection => detection ? postModerationAudit(detection, message) : undefined)
-      .catch(error => console.error('[moderation] observe processing failed', error));
+      .catch(error => console.error('[moderation] processing failed', error));
   } else {
     void recordModerationIngressDiagnostic({
       resultCode:'skipped_channel_not_monitored',guildId:message.guildId,channelId:message.channelId,channelName:channelName||null,
@@ -515,9 +521,7 @@ async function handleMessage(message: Message) {
       if (issueReplyAllowed || mentionOverride) {
         await ensureIssueDiscordThread(issue.id).catch(error => console.warn('[issues] unable to create Discord issue ticket', error));
         const currentIssue = await getIssue(issue.id);
-        const counted = added ? `
-
-I added your report to the affected-player count.` : '';
+        const counted = added ? `\n\nI added your report to the affected-player count.` : '';
         responseText = `${await getIssuePublicMessage(currentIssue || issue)}${counted}`;
         responseComponents = knownIssueButtons(issue.id, currentIssue?.discord_thread_id || null);
         await syncIssueDiscordPost(issue.id).catch(() => null);
@@ -536,6 +540,40 @@ I added your report to the affected-player count.` : '';
       if (issueReplyAllowed || mentionOverride) {
         responseText = `I don't see an existing known issue that clearly matches this yet. I logged it as a possible new issue for staff to review instead of guessing. If you want staff to track it as a report, use the button below.`;
         responseComponents = candidateButtons(Number(candidate.id));
+      }
+    }
+  }
+
+  const suggestionReplyAllowed = modeAllows(policy.mode,'suggestion') && (policy.auto_reply || policy.mode === 'suggestions');
+  if (!responseText && effectiveIntent === 'suggestion' && policy.detect_suggestions) {
+    const recorded = await recordSuggestion({
+      text: message.content,
+      normalizedText: classification.normalizedQuestion,
+      title: classification.normalizedQuestion,
+      topic: classification.topic,
+      relatedTerms: [...classification.searchTerms,...classification.relatedTopics],
+      discordUserId: message.author.id,
+      channelId: message.channelId,
+      discordMessageId: storedId
+    });
+    const suggestion = recorded.suggestion;
+    if (suggestion) {
+      matchedSources = [{
+        type:'suggestion',id:suggestion.public_id||suggestion.id,title:suggestion.title,status:suggestion.status,
+        supporters:Number(suggestion.unique_supporters||suggestion.mention_count||0),
+        match:recorded.match
+      }];
+      if (suggestionReplyAllowed || mentionOverride) {
+        const publicId=suggestion.public_id||`SUG-${String(suggestion.id).padStart(4,'0')}`;
+        const status=String(suggestion.status||'candidate').replaceAll('_',' ');
+        if (recorded.created) {
+          responseText=`I logged that as **${publicId} · ${suggestion.title}** for staff to review. If anyone else likes the idea, they can use the button below so support is counted without creating duplicate suggestions.`;
+        } else if (recorded.supporterAdded) {
+          responseText=`That matches **${publicId} · ${suggestion.title}**. I added your support to the existing suggestion. Current status: **${status}**.`;
+        } else {
+          responseText=`That matches **${publicId} · ${suggestion.title}**. You're already counted as supporting it. Current status: **${status}**.`;
+        }
+        responseComponents=suggestionButtons(Number(suggestion.id));
       }
     }
   }
@@ -661,6 +699,21 @@ export async function startDiscord() {
           ephemeral: true
         });
       })().catch(error => console.error('[discord] candidate button failed', error));
+      return;
+    }
+
+    if (parts[0] === 'suggestion' && parts[1] === 'support') {
+      void (async()=>{
+        const suggestion=await getSuggestion(id);
+        if(!suggestion) return interaction.reply({content:'That suggestion is no longer available.',ephemeral:true});
+        const added=await addSuggestionSupport(id,interaction.user.id,{text:'Supported via Discord suggestion button.',source:'discord_button'});
+        return interaction.reply({
+          content:added
+            ? `Your support was added to **${suggestion.public_id||`SUG-${id}`} · ${suggestion.title}**.`
+            : `You're already counted as supporting **${suggestion.public_id||`SUG-${id}`} · ${suggestion.title}**.`,
+          ephemeral:true
+        });
+      })().catch(error=>console.error('[discord] suggestion support button failed',error));
     }
   });
   await discord.login(env.DISCORD_TOKEN);
