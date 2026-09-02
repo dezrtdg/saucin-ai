@@ -40,6 +40,10 @@ function normalize(value:string){
   return value.toLowerCase().replace(/[^a-z0-9\s/_-]/g,' ').replace(/\s+/g,' ').trim().slice(0,1000);
 }
 
+function normalizeCategory(value:unknown){
+  return String(value||'general').toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,100)||'general';
+}
+
 function suggestionText(row:any){
   return [row.title,row.summary,row.community_context,row.category,...(row.related_terms||[])].filter(Boolean).join('\n');
 }
@@ -164,24 +168,54 @@ export async function getSuggestionPublicMessage(suggestionOrId:any):Promise<str
     String(suggestion.summary||'').slice(0,1250),
     suggestion.community_context?`\n**Community additions:**\n${String(suggestion.community_context).slice(0,450)}`:'',
     '',
-    'Add details, examples, links, screenshots, or questions in this post. Use **I support this idea** to add your support without creating a duplicate.'
+    '**Help Saucin AI understand the idea:**',
+    '• What should be added or changed?',
+    '• How should it work during roleplay?',
+    '• Who would use it, and when?',
+    '• Add examples, links, screenshots, or videos if you have them.',
+    '',
+    'I’ll organize useful details here and update the dashboard as the idea develops. Use **I support this idea** instead of creating a duplicate. 🌶️'
   ].filter(line=>line!==null&&line!==undefined).join('\n').slice(0,1950);
 }
 
-async function summarizeSuggestionThread(suggestion:any,newContent:string){
-  if(!client||!env.AI_ENABLED) return '';
+type SuggestionThreadAnalysis={
+  community_context:string;
+  refined_title:string;
+  refined_summary:string;
+  category:string;
+  related_terms:string[];
+};
+
+async function analyzeSuggestionThread(suggestion:any,newContent:string):Promise<SuggestionThreadAnalysis|null>{
+  if(!client||!env.AI_ENABLED) return null;
   try{
     const response=await client.responses.create({
       model:env.AI_REPLY_MODEL,
       reasoning:{effort:'low'},
-      instructions:`You maintain a concise community-context summary for a FiveM server suggestion. Return plain text only, maximum 650 characters. Use only details actually stated in the existing summary or new message. Preserve useful examples, links, requested behavior, concerns, and open questions. Do not invent implementation details, promises, staff decisions, or facts. Do not repeat the main suggestion unless needed for clarity.`,
-      input:`SUGGESTION: ${suggestion.title}\nMAIN SUMMARY: ${suggestion.summary}\nEXISTING COMMUNITY CONTEXT: ${suggestion.community_context||'(none)'}\nNEW FORUM MESSAGE: ${newContent.slice(0,5000)}`,
-      max_output_tokens:300
+      instructions:`You maintain a structured FiveM community suggestion as its Discord forum discussion develops. Return ONLY compact JSON with keys: community_context, refined_title, refined_summary, category, related_terms.
+
+GROUNDING RULES:
+- Use only the original idea, existing dashboard text, existing community context, and the new forum message.
+- Preserve the submitter's intent. Never invent features, promises, technical requirements, dates, costs, or staff decisions.
+- community_context is a concise running summary of useful examples, links, requested behavior, concerns, clarifications, and open questions.
+- refined_title and refined_summary may clarify what the idea really is when later context corrects the initial interpretation.
+- category must be one concise lowercase label such as roleplay, jobs-economy, vehicles, housing-map, police-ems, crime, items-inventory, quality-of-life, community, or general.
+- related_terms should include broad phrases that help recognize differently worded versions of the same idea.`,
+      input:`CURRENT TITLE: ${suggestion.title}\nCURRENT SUMMARY: ${suggestion.summary}\nCURRENT CATEGORY: ${suggestion.category}\nCURRENT RELATED TERMS: ${(suggestion.related_terms||[]).join(', ')}\nEXISTING COMMUNITY CONTEXT: ${suggestion.community_context||'(none)'}\nNEW FORUM MESSAGE: ${newContent.slice(0,5000)}`,
+      max_output_tokens:900
     });
-    return response.output_text.trim().slice(0,1000);
+    const jsonText=response.output_text.trim().replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`$/,'');
+    const parsed=JSON.parse(jsonText);
+    return {
+      community_context:String(parsed.community_context||suggestion.community_context||'').trim().slice(0,1800),
+      refined_title:String(parsed.refined_title||suggestion.title||'').replace(/\s+/g,' ').trim().slice(0,180),
+      refined_summary:String(parsed.refined_summary||suggestion.summary||'').trim().slice(0,6000),
+      category:normalizeCategory(parsed.category||suggestion.category),
+      related_terms:cleanDraftList(parsed.related_terms,40,160)
+    };
   }catch(error){
-    console.error('[suggestions] forum summary failed',error);
-    return '';
+    console.error('[suggestions] forum analysis failed',error);
+    return null;
   }
 }
 
@@ -209,17 +243,36 @@ export async function processSuggestionThreadMessage(input:{
     source:'suggestion_forum'
   });
   const suggestion=await getSuggestion(input.suggestionId);
-  const communityContext=settings.ai_summarize_thread&&suggestion
-    ? await summarizeSuggestionThread(suggestion,input.content)
+  const analysis=settings.ai_summarize_thread&&suggestion
+    ? await analyzeSuggestionThread(suggestion,input.content)
+    : null;
+  const communityContext=analysis?.community_context||'';
+  const refinedTitle=analysis?.refined_title||'';
+  const refinedSummary=analysis?.refined_summary||'';
+  const category=analysis?.category||'';
+  const relatedTerms=analysis
+    ? unique([...(suggestion?.related_terms||[]),...analysis.related_terms],40)
+    : suggestion?.related_terms||[];
+  const normalized=analysis
+    ? normalize(`${refinedTitle||suggestion?.title||''} ${refinedSummary||suggestion?.summary||''} ${relatedTerms.join(' ')}`)
     : '';
   await db.query(`
     UPDATE suggestions
        SET community_context=CASE WHEN $1<>'' THEN $1 ELSE community_context END,
+           title=CASE WHEN status IN ('candidate','reviewing') AND $2<>'' THEN $2 ELSE title END,
+           summary=CASE WHEN status IN ('candidate','reviewing') AND $3<>'' THEN $3 ELSE summary END,
+           category=CASE WHEN $4<>'' THEN $4 ELSE category END,
+           related_terms=CASE WHEN $5::text[]<>'{}'::text[] THEN $5::text[] ELSE related_terms END,
+           normalized_text=CASE WHEN $6<>'' THEN $6 ELSE normalized_text END,
+           fingerprint=CASE WHEN $6<>'' THEN md5($6) ELSE fingerprint END,
+           embedding=CASE WHEN $6<>'' THEN NULL ELSE embedding END,
+           embedding_updated_at=CASE WHEN $6<>'' THEN NULL ELSE embedding_updated_at END,
            thread_last_activity_at=NOW(),
            thread_summary_updated_at=CASE WHEN $1<>'' THEN NOW() ELSE thread_summary_updated_at END,
            last_seen=NOW(),updated_at=NOW()
-     WHERE id=$2`,[communityContext,input.suggestionId]);
-  return {processed:true,community_context:communityContext};
+     WHERE id=$7`,[communityContext,refinedTitle,refinedSummary,category,relatedTerms,normalized,input.suggestionId]);
+  if(analysis) await refreshSuggestionEmbedding(input.suggestionId).catch(()=>false);
+  return {processed:true,community_context:communityContext,category:category||suggestion?.category||'general'};
 }
 
 function planText(plan:SuggestionQueryPlan){
@@ -257,7 +310,7 @@ export async function findMatchingSuggestion(plan:SuggestionQueryPlan){
            )::float AS fuzzy_rank,
            ${semantic}
       FROM suggestions
-     WHERE status <> 'declined'
+     WHERE status <> 'declined' AND dismissed_at IS NULL
      ORDER BY last_seen DESC
      LIMIT 400`,params);
 
@@ -325,6 +378,19 @@ export async function addSuggestionSupport(suggestionId:number,discordUserId:str
   }
 }
 
+export async function dismissSuggestionCandidate(suggestionId:number,discordUserId:string){
+  const result=await db.query(`
+    UPDATE suggestions
+       SET dismissed_at=NOW(),dismissed_by=$2,updated_at=NOW()
+     WHERE id=$1
+       AND discord_thread_id IS NULL
+       AND status='candidate'
+       AND discord_user_id=$2
+       AND dismissed_at IS NULL
+     RETURNING id`,[suggestionId,discordUserId]);
+  return Boolean(result.rowCount);
+}
+
 export async function recordSuggestion(input:{
   text:string;
   normalizedText?:string;
@@ -362,8 +428,8 @@ export async function recordSuggestion(input:{
   const result=await db.query(`
     INSERT INTO suggestions
       (title,summary,category,status,mention_count,normalized_text,fingerprint,related_terms,discord_user_id,channel_id,discord_message_id,updated_at)
-    VALUES ($1,$2,'general','candidate',0,$3,md5($3),$4,$5,$6,$7,NOW())
-    RETURNING *`,[title,summary,normalized,unique(input.relatedTerms||[]),input.discordUserId||null,input.channelId||null,input.discordMessageId??null]);
+    VALUES ($1,$2,$3,'candidate',0,$4,md5($4),$5,$6,$7,$8,NOW())
+    RETURNING *`,[title,summary,normalizeCategory(input.topic),normalized,unique(input.relatedTerms||[]),input.discordUserId||null,input.channelId||null,input.discordMessageId??null]);
   const id=Number(result.rows[0].id);
   await db.query('UPDATE suggestions SET public_id=$1 WHERE id=$2',[`SUG-${String(id).padStart(4,'0')}`,id]);
   if(input.discordUserId){
@@ -395,9 +461,45 @@ export async function getSuggestion(id:number){
   return result.rows[0]??null;
 }
 
+export async function refineSuggestionForPublishing(id:number){
+  const suggestion=await getSuggestion(id);
+  if(!suggestion) return null;
+  const source=[
+    ...(suggestion.events||[]).slice().reverse().map((event:any)=>String(event.suggestion_text||'')),
+    String(suggestion.community_context||'')
+  ].filter(Boolean).join('\n\n---\n\n').slice(0,18000);
+  if(!source.trim()) return suggestion;
+  try{
+    const draft=await buildSuggestionDraft({
+      sourceText:source,
+      existingTitle:String(suggestion.title||''),
+      existingSummary:String(suggestion.summary||''),
+      existingCategory:String(suggestion.category||'general'),
+      existingRelatedTerms:suggestion.related_terms||[]
+    });
+    const relatedTerms=unique([...(suggestion.related_terms||[]),...draft.related_terms],40);
+    const normalized=normalize(`${draft.title} ${draft.summary} ${relatedTerms.join(' ')}`);
+    await db.query(`
+      UPDATE suggestions
+         SET title=$1,summary=$2,category=$3,related_terms=$4,
+             normalized_text=$5,fingerprint=md5($5),embedding=NULL,embedding_updated_at=NULL,updated_at=NOW()
+       WHERE id=$6 AND dismissed_at IS NULL`,[
+      draft.title,draft.summary,normalizeCategory(draft.category),relatedTerms,normalized,id
+    ]);
+    await db.query(`
+      INSERT INTO suggestion_updates (suggestion_id,update_type,note)
+      VALUES ($1,'ai_refined',$2)`,[id,draft.expansion_note||'AI organized the original idea before forum publication.']).catch(()=>null);
+    await refreshSuggestionEmbedding(id).catch(()=>false);
+    return getSuggestion(id);
+  }catch(error){
+    console.warn('[suggestions] initial AI refinement unavailable; publishing preserved draft',error);
+    return suggestion;
+  }
+}
+
 export async function listSuggestions(input?:{status?:string;limit?:number}){
   const params:unknown[]=[];
-  const where:string[]=[];
+  const where:string[]=['s.dismissed_at IS NULL'];
   if(input?.status){params.push(input.status);where.push(`s.status=$${params.length}`);}
   params.push(Math.max(1,Math.min(500,input?.limit||200)));
   const result=await db.query(`
