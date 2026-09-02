@@ -1,7 +1,9 @@
 import './globals.css';
+import './action-feedback.css';
 import { Suspense } from 'react';
 import { getDashboardSession, isDashboardAuthRequired } from '../lib/auth';
 import SidebarNav from '../components/SidebarNav';
+import DashboardActionFeedback from '../components/DashboardActionFeedback';
 import { can, getDashboardAccess } from '../lib/permissions';
 
 export const metadata = { title:'Saucin AI', description:'Saucin RP server intelligence dashboard' };
@@ -21,6 +23,7 @@ export default async function RootLayout({ children }: Readonly<{children:React.
   const permissions=access?.permissions||[];
   const ownerBypass=Boolean(access?.owner_bypass);
   return <html lang="en"><body>
+    <Suspense fallback={null}><DashboardActionFeedback/></Suspense>
     <div className="consoleShell">
       <aside className="consoleSidebar">
         <div className="consoleBrand"><img className="brandLogo" src="/saucin-rp-logo.png" alt="Saucin RP"/><div><strong>Saucin AI</strong><small>{process.env.SERVER_NAME||'Saucin RP'} console</small></div></div>

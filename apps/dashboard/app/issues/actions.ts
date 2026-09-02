@@ -1,8 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
 import { api } from '../../lib/api';
+import { runDashboardAction } from '../../lib/actionFeedback';
 
 function lines(value: FormDataEntryValue | null) {
   return String(value || '')
@@ -30,99 +30,127 @@ function issuePayload(formData: FormData) {
 }
 
 export async function createIssueAction(formData: FormData) {
-  const created = await api<{id:string|number}>('/api/issues', { method: 'POST', body: JSON.stringify(issuePayload(formData)) });
-  revalidatePath('/issues');
-  redirect(`/issues/${created.id}`);
+  return runDashboardAction({
+    fallbackPath:'/issues/create',successMessage:'Issue created.',successPath:(created:{id:string|number})=>`/issues/${created.id}`
+  },async()=>{
+    const created=await api<{id:string|number}>('/api/issues', { method: 'POST', body: JSON.stringify(issuePayload(formData)) });
+    revalidatePath('/issues');
+    return created;
+  });
 }
 
 export async function updateIssueAction(id: string, formData: FormData) {
-  await api(`/api/issues/${id}`, { method: 'PUT', body: JSON.stringify(issuePayload(formData)) });
-  revalidatePath('/issues');
+  return runDashboardAction({fallbackPath:`/issues/${id}`,successMessage:'Issue saved.'},async()=>{
+    await api(`/api/issues/${id}`, { method: 'PUT', body: JSON.stringify(issuePayload(formData)) });
+    revalidatePath('/issues');
+    revalidatePath(`/issues/${id}`);
+    return null;
+  });
 }
 
 export async function deleteIssueAction(id: string) {
-  await api(`/api/issues/${id}`, { method: 'DELETE' });
-  revalidatePath('/issues');
+  return runDashboardAction({fallbackPath:'/issues',successMessage:'Issue deleted.',successPath:'/issues'},async()=>{
+    await api(`/api/issues/${id}`, { method: 'DELETE' });
+    revalidatePath('/issues');
+    return null;
+  });
 }
 
 export async function createIssueTicketAction(id: string) {
-  await api(`/api/issues/${id}/discord-ticket`, { method: 'POST', body: '{}' });
-  revalidatePath('/issues');
+  return runDashboardAction({fallbackPath:`/issues/${id}`,successMessage:'Discord issue ticket created or synchronized.'},async()=>{
+    await api(`/api/issues/${id}/discord-ticket`, { method: 'POST', body: '{}' });
+    revalidatePath('/issues');
+    revalidatePath(`/issues/${id}`);
+    return null;
+  });
 }
 
 export async function observationStatusAction(issueId: string, observationId: string, status: 'community'|'verified'|'rejected') {
-  await api(`/api/issues/${issueId}/observations/${observationId}`, {
-    method: 'PUT', body: JSON.stringify({ status })
+  return runDashboardAction({fallbackPath:`/issues/${issueId}`,successMessage:'Observation status updated.'},async()=>{
+    await api(`/api/issues/${issueId}/observations/${observationId}`, { method: 'PUT', body: JSON.stringify({ status }) });
+    revalidatePath('/issues');
+    revalidatePath(`/issues/${issueId}`);
+    return null;
   });
-  revalidatePath('/issues');
 }
 
 export async function candidateStatusAction(id: string, formData: FormData) {
-  await api(`/api/issues/candidates/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify({ status: String(formData.get('status') || 'dismissed') })
+  return runDashboardAction({fallbackPath:'/issues',successMessage:'Incoming report updated.'},async()=>{
+    await api(`/api/issues/candidates/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ status: String(formData.get('status') || 'dismissed') })
+    });
+    revalidatePath('/issues');
+    return null;
   });
-  revalidatePath('/issues');
 }
 
 export async function promoteCandidateAction(id: string, formData: FormData) {
-  await api(`/api/issues/candidates/${id}/promote`, {
-    method: 'POST',
-    body: JSON.stringify({
-      title: String(formData.get('title') || '').trim() || undefined,
-      severity: String(formData.get('severity') || 'medium'),
-      status: String(formData.get('status') || 'new'),
-      resource_name: String(formData.get('resource_name') || '').trim() || undefined,
-      category: String(formData.get('category') || 'general')
-    })
+  return runDashboardAction({fallbackPath:'/issues',successMessage:'Incoming report promoted to a known issue.'},async()=>{
+    await api(`/api/issues/candidates/${id}/promote`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: String(formData.get('title') || '').trim() || undefined,
+        severity: String(formData.get('severity') || 'medium'),
+        status: String(formData.get('status') || 'new'),
+        resource_name: String(formData.get('resource_name') || '').trim() || undefined,
+        category: String(formData.get('category') || 'general')
+      })
+    });
+    revalidatePath('/issues');
+    return null;
   });
-  revalidatePath('/issues');
-  redirect('/issues');
 }
 
 export async function linkCandidateAction(id: string, formData: FormData) {
-  await api(`/api/issues/candidates/${id}/link`, {
-    method: 'POST',
-    body: JSON.stringify({ issue_id: String(formData.get('issue_id') || '') })
+  return runDashboardAction({fallbackPath:'/issues',successMessage:'Incoming report linked to the known issue.'},async()=>{
+    await api(`/api/issues/candidates/${id}/link`, {
+      method: 'POST',
+      body: JSON.stringify({ issue_id: String(formData.get('issue_id') || '') })
+    });
+    revalidatePath('/issues');
+    return null;
   });
-  revalidatePath('/issues');
 }
 
-
 export async function createIssueWithAiAction(formData: FormData) {
-  const sourceText = String(formData.get('source_text') || '').trim();
-  if (sourceText.length < 8) throw new Error('Paste the issue evidence you want Saucin AI to organize.');
-  const draft = await api<{
-    title:string; description:string; category:string; resource_name:string; severity:'low'|'medium'|'high'|'critical';
-    aliases:string[]; symptoms:string[]; log_patterns:string[]; workaround:string; staff_notes:string; authoring_note?:string;
-  }>('/api/issues/ai-build', {
-    method: 'POST',
-    body: JSON.stringify({
-      source_text: sourceText,
-      category_hint: String(formData.get('category_hint') || '').trim() || undefined,
-      resource_hint: String(formData.get('resource_hint') || '').trim() || undefined,
-      severity_hint: String(formData.get('severity_hint') || '').trim() || undefined
-    })
-  });
+  return runDashboardAction({
+    fallbackPath:'/issues/create',successMessage:'AI issue draft created.',successPath:(created:{id:string|number})=>`/issues/${created.id}`
+  },async()=>{
+    const sourceText = String(formData.get('source_text') || '').trim();
+    if (sourceText.length < 8) throw new Error('Paste the issue evidence you want Saucin AI to organize.');
+    const draft = await api<{
+      title:string; description:string; category:string; resource_name:string; severity:'low'|'medium'|'high'|'critical';
+      aliases:string[]; symptoms:string[]; log_patterns:string[]; workaround:string; staff_notes:string; authoring_note?:string;
+    }>('/api/issues/ai-build', {
+      method: 'POST',
+      body: JSON.stringify({
+        source_text: sourceText,
+        category_hint: String(formData.get('category_hint') || '').trim() || undefined,
+        resource_hint: String(formData.get('resource_hint') || '').trim() || undefined,
+        severity_hint: String(formData.get('severity_hint') || '').trim() || undefined
+      })
+    });
 
-  const reviewNote = draft.authoring_note ? `AI creation review note: ${draft.authoring_note}` : '';
-  const staffNotes = [draft.staff_notes, reviewNote].filter(Boolean).join('\n\n').slice(0,12000);
-  const created = await api<{id:string|number}>('/api/issues', {
-    method: 'POST',
-    body: JSON.stringify({
-      title: draft.title,
-      description: draft.description,
-      category: draft.category,
-      resource_name: draft.resource_name || undefined,
-      severity: draft.severity,
-      status: 'new',
-      aliases: draft.aliases,
-      symptoms: draft.symptoms,
-      log_patterns: draft.log_patterns,
-      workaround: draft.workaround || undefined,
-      staff_notes: staffNotes || undefined
-    })
+    const reviewNote = draft.authoring_note ? `AI creation review note: ${draft.authoring_note}` : '';
+    const staffNotes = [draft.staff_notes, reviewNote].filter(Boolean).join('\n\n').slice(0,12000);
+    const created = await api<{id:string|number}>('/api/issues', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: draft.title,
+        description: draft.description,
+        category: draft.category,
+        resource_name: draft.resource_name || undefined,
+        severity: draft.severity,
+        status: 'new',
+        aliases: draft.aliases,
+        symptoms: draft.symptoms,
+        log_patterns: draft.log_patterns,
+        workaround: draft.workaround || undefined,
+        staff_notes: staffNotes || undefined
+      })
+    });
+    revalidatePath('/issues');
+    return created;
   });
-  revalidatePath('/issues');
-  redirect(`/issues/${created.id}`);
 }

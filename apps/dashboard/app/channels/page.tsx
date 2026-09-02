@@ -1,6 +1,7 @@
 import { revalidatePath } from 'next/cache';
 import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
+import { runDashboardAction } from '../../lib/actionFeedback';
 import ChannelSettingsForm, { type ChannelSaveState } from '../../components/ChannelSettingsForm';
 
 const MODES = ['ignored','monitor','questions','issues','suggestions','full'] as const;
@@ -64,8 +65,11 @@ async function saveAllChannels(previous: ChannelSaveState, formData: FormData): 
 
 async function syncChannels() {
   'use server';
-  await api('/api/channels/sync', { method: 'POST' });
-  revalidatePath('/channels');
+  return runDashboardAction({fallbackPath:'/channels',successMessage:'Discord channels refreshed.'},async()=>{
+    await api('/api/channels/sync', { method: 'POST' });
+    revalidatePath('/channels');
+    return null;
+  });
 }
 
 function channelLocation(channel: Channel) {

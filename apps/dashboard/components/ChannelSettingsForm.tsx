@@ -29,7 +29,7 @@ export default function ChannelSettingsForm({action,canManage,disabled,hasChanne
   const saved=state.status==='saved'&&!dirty&&!pending;
   const label=pending?'Saving settings…':saved?'Settings saved ✓':'Save All Channel Settings';
 
-  return <form action={formAction} onChange={()=>setDirty(true)}>
+  return <form action={formAction} onChange={()=>setDirty(true)} data-dashboard-managed-state="true">
     <section className="panel">
       <div className="panelTitle">
         <div>
