@@ -19,20 +19,34 @@ type Rule={
 };
 type Settings={mode:'off'|'observe';minimum_confidence:number;repeat_window_days:number;audit_channel_id:string|null;post_observations_to_audit:boolean;exempt_role_ids:string[];diagnostics_enabled:boolean};
 type Data={settings:Settings;roles:Role[];rules:Rule[];channels:Channel[]};
+type LiveState={
+  effective_mode:'off'|'observe'|'live';
+  live_enabled:boolean;
+  readiness:{connected:boolean;guild_found:boolean;send_messages:boolean;manage_messages:boolean;moderate_members:boolean;ready:boolean;reason:string|null};
+  pending_actions:number;
+  failed_actions_24h:number;
+};
+
+function readyLabel(value:boolean){return value?'✓ Ready':'✕ Missing'}
 
 export default async function ModerationSettingsPage(){
   const access=await getDashboardAccess();
   if(!can(access,'moderation.configure')) redirect('/settings');
-  const data=await api<Data>('/api/moderation/settings');
+  const [data,live]=await Promise.all([
+    api<Data>('/api/moderation/settings'),
+    api<LiveState>('/api/moderation/live')
+  ]);
   const s=data.settings;
   const monitored=data.channels.filter(c=>c.monitor_messages&&c.mode!=='ignored');
+  const canTakeActions=can(access,'moderation.actions');
+  const canEnableLive=live.readiness.ready&&canTakeActions;
 
   return <>
     <header className="pageHeader">
       <div>
         <p className="eyebrow">MODERATION</p>
-        <h1>Observe Mode Settings</h1>
-        <p>Configure how Saucin AI detects possible Discord-rule violations before live enforcement is introduced.</p>
+        <h1>Moderation Settings</h1>
+        <p>Run Saucin AI in Observe Mode for review-only detection or enable Live Enforcement when Discord permissions and staff controls are ready.</p>
       </div>
       <div className={styles.headerActions}>
         <Link className="button" href="/settings/moderation/diagnostics">Diagnostics</Link>
@@ -40,22 +54,33 @@ export default async function ModerationSettingsPage(){
       </div>
     </header>
 
-    <div className={styles.info}>v1.3 is detection-only. The standard escalation ladder below is simulated for staff review — the bot cannot warn, delete messages, or timeout anyone yet.</div>
+    <div className={styles.info}><strong>v1.4 safety rule:</strong> only staff-confirmed prior cases for the same rule advance the escalation ladder. AI detections that remain pending or are dismissed cannot escalate a member to a timeout.</div>
 
     <section className="panel settingsSection">
-      <div className="panelTitle"><div><h2>Global moderation</h2><p>Observe only runs in Discord channels that are already enabled for monitoring on the Channels page.</p></div></div>
+      <div className="panelTitle"><div><h2>Global moderation</h2><p>Moderation only evaluates Discord channels already enabled for monitoring on the Channels page.</p></div><span className="badge">{live.effective_mode.toUpperCase()}</span></div>
       <form action={saveModerationSettingsAction} className="knowledgeForm">
         <div className={styles.settingsGrid}>
-          <label className="field"><span>Mode</span><select className="input select" name="mode" defaultValue={s.mode}><option value="off">Off</option><option value="observe">Observe only</option></select><small>Start with Observe Only and review false positives before live actions are enabled.</small></label>
+          <label className="field"><span>Mode</span><select className="input select" name="mode" defaultValue={live.effective_mode}><option value="off">Off</option><option value="observe">Observe only</option><option value="live" disabled={!canEnableLive&&live.effective_mode!=='live'}>Live enforcement</option></select><small>{canTakeActions?(live.readiness.ready?'Live enforcement is available.':'Live is locked until the Discord permission check passes.'):'Your dashboard role does not have the Take Moderation Actions permission.'}</small></label>
           <label className="field"><span>Minimum AI confidence</span><input className="input" type="number" min="0.50" max="0.99" step="0.01" name="minimum_confidence" defaultValue={Number(s.minimum_confidence).toFixed(2)}/><small>Recommended starting point: 0.90.</small></label>
           <label className="field"><span>Repeat-offense window</span><input className="input" type="number" min="1" max="90" name="repeat_window_days" defaultValue={s.repeat_window_days}/><small>Only staff-confirmed cases for the same rule advance the ladder.</small></label>
-          <label className="field"><span>Staff audit channel</span><select className="input select" name="audit_channel_id" defaultValue={s.audit_channel_id||''}><option value="">Dashboard only</option>{data.channels.map(c=><option key={c.id} value={c.id}>#{c.name||c.id}</option>)}</select><small>Optional staff-only channel for observe detections.</small></label>
-          <label className="settingToggleCard"><input type="checkbox" name="post_observations_to_audit" defaultChecked={s.post_observations_to_audit}/><span><strong>Post detections to audit channel</strong><small>Only staff notifications; no player-facing action.</small></span></label>
+          <label className="field"><span>Staff audit channel</span><select className="input select" name="audit_channel_id" defaultValue={s.audit_channel_id||''}><option value="">Dashboard only</option>{data.channels.map(c=><option key={c.id} value={c.id}>#{c.name||c.id}</option>)}</select><small>In Live mode, completed/failed actions are posted here automatically when a channel is configured.</small></label>
+          <label className="settingToggleCard"><input type="checkbox" name="post_observations_to_audit" defaultChecked={s.post_observations_to_audit} disabled={live.effective_mode==='live'}/><span><strong>Post Observe detections to audit channel</strong><small>Used only in Observe Mode. Live mode posts action results instead to avoid duplicate audit messages.</small></span></label>
           <label className="settingToggleCard"><input type="checkbox" name="diagnostics_enabled" defaultChecked={s.diagnostics_enabled}/><span><strong>Enable moderation diagnostics</strong><small>Temporarily record why each Discord message was processed or skipped. Keep this off when you are done tuning.</small></span></label>
-          <div className={styles.full}><div className="settingsSubsection"><h3>Globally exempt Discord roles</h3><p>Members with any selected role are skipped before AI analysis.</p></div><div className={styles.checkGrid}>{data.roles.map(r=><label className={styles.check} key={r.id}><input type="checkbox" name="exempt_role_ids" value={r.id} defaultChecked={s.exempt_role_ids.includes(r.id)}/><span>{r.name}</span></label>)}</div></div>
+          <div className={`${styles.full}`}><div className="settingsSubsection"><h3>Globally exempt Discord roles</h3><p>Members with any selected role are skipped before AI analysis.</p></div><div className={styles.checkGrid}>{data.roles.map(r=><label className={styles.check} key={r.id}><input type="checkbox" name="exempt_role_ids" value={r.id} defaultChecked={s.exempt_role_ids.includes(r.id)}/><span>{r.name}</span></label>)}</div></div>
         </div>
-        <div className="formActions"><p>Changes take effect on new Discord messages immediately after save.</p><button className="button primary" type="submit">Save moderation settings</button></div>
+        <div className="formActions"><p>Switching away from Live mode cancels any live actions that have not started yet.</p><button className="button primary" type="submit">Save moderation settings</button></div>
       </form>
+    </section>
+
+    <section className="panel">
+      <div className="panelTitle"><div><h2>Live enforcement readiness</h2><p>Saucin AI will refuse to enable Live mode until all required Discord permissions are present.</p></div><span className="badge">{live.readiness.ready?'READY':'NOT READY'}</span></div>
+      <div className={styles.ladderGrid}>
+        <div className={styles.ladderStep}><span>Discord connection</span><strong>{readyLabel(live.readiness.connected&&live.readiness.guild_found)}</strong><small>Bot connected and Saucin RP guild available.</small></div>
+        <div className={styles.ladderStep}><span>Send Messages</span><strong>{readyLabel(live.readiness.send_messages)}</strong><small>Required for reminders, warnings, timeout notices, and audit messages.</small></div>
+        <div className={styles.ladderStep}><span>Manage Messages</span><strong>{readyLabel(live.readiness.manage_messages)}</strong><small>Required to delete offending messages at 3rd+ offense.</small></div>
+        <div className={styles.ladderStep}><span>Moderate Members</span><strong>{readyLabel(live.readiness.moderate_members)}</strong><small>Required to apply Discord communication timeouts.</small></div>
+      </div>
+      <div className={styles.ladderNote}>{live.readiness.reason||'Permission preflight passed.'} The Saucin AI Discord role must also be above any member roles it needs to timeout; Discord role hierarchy is checked again when each action runs.</div>
     </section>
 
     <section className="panel">
