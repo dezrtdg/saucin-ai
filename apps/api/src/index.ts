@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import { env } from './env.js';
 import { db, runMigrations } from './db.js';
 import { redis } from './redis.js';
-import { startDiscord, discord } from './discord/client.js';
+import { startDiscord, discord, startTicketMaintenanceWorker, stopTicketMaintenanceWorker } from './discord/client.js';
 import { healthRoutes } from './routes/health.js';
 import { adminRoutes } from './routes/admin.js';
 import { liveModerationRoutes } from './routes/liveModeration.js';
@@ -22,12 +22,12 @@ await app.register(adminRoutes);
 await app.register(liveModerationRoutes);
 await app.register(suggestionRoutes);
 
-app.get('/', async () => ({ service: 'Saucin AI API', version: '1.5.0' }));
+app.get('/', async () => ({ service: 'Saucin AI API', version: '1.6.0' }));
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
 startModerationNoticeEnricher();
 startDiscord()
-  .then(() => startLiveModerationWorker())
+  .then(() => { startLiveModerationWorker(); startTicketMaintenanceWorker(); })
   .catch((error) => app.log.error(error, 'Discord startup failed'));
 backfillKnowledgeEmbeddings(200).catch((error) => app.log.error(error, 'Knowledge embedding backfill failed'));
 backfillIssueEmbeddings(100).catch((error) => app.log.error(error, 'Issue embedding backfill failed'));
@@ -36,6 +36,7 @@ backfillSuggestionEmbeddings(100).catch((error) => app.log.error(error, 'Suggest
 async function shutdown(signal: string) {
   app.log.info({ signal }, 'Shutting down');
   stopLiveModerationWorker();
+  stopTicketMaintenanceWorker();
   await discord.destroy();
   await redis.quit().catch(() => undefined);
   await db.end();

@@ -8,7 +8,7 @@ type NavGroup={label:string;items:NavItem[]};
 
 const groups:NavGroup[]=[
   {label:'OVERVIEW',items:[{name:'Dashboard',href:'/',permission:'dashboard.view'}]},
-  {label:'SUPPORT',items:[{name:'Issues',href:'/issues',permission:'issues.view'},{name:'Suggestions',href:'/suggestions',permission:'suggestions.view'},{name:'Moderation',href:'/moderation',permission:'moderation.view'}]},
+  {label:'SUPPORT',items:[{name:'Tickets',href:'/tickets',permission:'tickets.view'},{name:'Issues',href:'/issues',permission:'issues.view'},{name:'Suggestions',href:'/suggestions',permission:'suggestions.view'},{name:'Moderation',href:'/moderation',permission:'moderation.view'}]},
   {label:'KNOWLEDGE',items:[
     {name:'Server Rules',href:'/knowledge/server-rules',permission:'knowledge.view'},
     {name:'Discord Rules',href:'/knowledge/discord-rules',permission:'knowledge.view'},

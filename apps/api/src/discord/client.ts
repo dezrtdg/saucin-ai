@@ -1,5 +1,6 @@
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -8,7 +9,12 @@ import {
   GatewayIntentBits,
   GuildBasedChannel,
   GuildTextBasedChannel,
-  Message
+  Message,
+  ModalBuilder,
+  PermissionFlagsBits,
+  StringSelectMenuBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } from 'discord.js';
 import { env } from '../env.js';
 import { db } from '../db.js';
@@ -35,6 +41,30 @@ import {
   recordSuggestion
 } from '../services/suggestions.js';
 import { processModerationMessage, recordModerationIngressDiagnostic, type ModerationDetection } from '../services/moderation.js';
+import {
+  activateTicket,
+  buildTicketTranscript,
+  claimTicket,
+  closeTicketRecord,
+  countOpenTicketsForUser,
+  createPunishmentRecord,
+  createTicketRecord,
+  expiringPunishments,
+  failTicketCreation,
+  getPunishment,
+  getTicket,
+  getTicketByChannel,
+  getTicketSettings,
+  getTicketType,
+  listTicketTypes,
+  markPunishmentFailed,
+  markPunishmentReversed,
+  saveTicketMessage,
+  setTicketPanelMessage,
+  setTicketStatus,
+  updatePunishmentApplied,
+  type TicketPunishmentAction
+} from '../services/tickets.js';
 
 export const discord = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
@@ -660,6 +690,441 @@ export async function postSuggestionStatusUpdate(suggestionId:number,fromStatus:
   return true;
 }
 
+function ticketPanelComponents(types:Awaited<ReturnType<typeof listTicketTypes>>){
+  const menu=new StringSelectMenuBuilder()
+    .setCustomId('ticket:create')
+    .setPlaceholder('What can we help you with?')
+    .addOptions(types.slice(0,25).map(type=>({
+      label:type.label.slice(0,100),
+      value:type.key,
+      description:(type.description||type.intake_prompt||'Open a private support ticket.').slice(0,100),
+      ...(type.emoji?{emoji:type.emoji}:{})
+    })));
+  return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)];
+}
+
+function ticketControlComponents(ticket:any){
+  const first=new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`ticket:claim:${ticket.id}`).setLabel('Claim ticket').setEmoji('🙋').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`ticket:waiting:${ticket.id}`).setLabel('Waiting on user').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`ticket:close:${ticket.id}`).setLabel('Close ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+  );
+  if(ticket.allow_punishments){
+    first.addComponents(new ButtonBuilder().setCustomId(`ticket:punish:${ticket.id}`).setLabel('Issue punishment').setEmoji('🛡️').setStyle(ButtonStyle.Secondary));
+  }
+  return [first];
+}
+
+function punishmentReverseComponents(punishmentId:number,contextTicketId?:number){
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`ticket:reverse:${punishmentId}${contextTicketId?`:${contextTicketId}`:''}`).setLabel('Reverse punishment').setEmoji('↩️').setStyle(ButtonStyle.Secondary)
+  )];
+}
+
+function punishmentAppealComponents(punishmentId:number){
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`punishment:appeal:${punishmentId}`).setLabel('Appeal this punishment').setEmoji('⚖️').setStyle(ButtonStyle.Secondary)
+  )];
+}
+
+function ticketChannelName(publicId:string,subject:string){
+  const slug=subject.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,55)||'support';
+  return `${publicId.toLowerCase()}-${slug}`.slice(0,100);
+}
+
+function cleanDiscordError(error:unknown){
+  return (error instanceof Error?error.message:String(error)).replace(/\s+/g,' ').trim().slice(0,1000);
+}
+
+function ticketActor(interaction:any){
+  return {userId:String(interaction.user.id),name:String(interaction.user.globalName||interaction.user.username||interaction.user.id)};
+}
+
+function interactionRoleIds(interaction:any){
+  const member=interaction.member;
+  const roleIds=new Set<string>();
+  const rawRoles=member?.roles;
+  if(rawRoles?.cache) for(const id of rawRoles.cache.keys()) roleIds.add(String(id));
+  else if(Array.isArray(rawRoles)) for(const id of rawRoles) roleIds.add(String(id));
+  return roleIds;
+}
+
+function interactionIsTicketAdmin(interaction:any){
+  const permissions=interaction.memberPermissions;
+  return Boolean(permissions?.has?.(PermissionFlagsBits.ManageGuild)||permissions?.has?.(PermissionFlagsBits.Administrator));
+}
+
+async function interactionCanManageTicket(interaction:any,ticket:any){
+  const roleIds=interactionRoleIds(interaction);
+  const hasSupport=(ticket.support_role_ids||[]).some((id:string)=>roleIds.has(String(id)));
+  return Boolean(hasSupport||interactionIsTicketAdmin(interaction));
+}
+
+async function interactionCanUsePunishment(interaction:any,ticket:any,action:TicketPunishmentAction|'reverse'){
+  if(!(await interactionCanManageTicket(interaction,ticket))) return false;
+  if(interactionIsTicketAdmin(interaction)) return true;
+  const settings=await getTicketSettings();
+  const allowed=action==='warning'?settings.warning_role_ids
+    :action==='timeout'?settings.timeout_role_ids
+      :action==='kick'?settings.kick_role_ids
+        :action==='reverse'?settings.reversal_role_ids
+          :settings.ban_role_ids;
+  if(!allowed.length) return true;
+  const roles=interactionRoleIds(interaction);
+  return allowed.some(id=>roles.has(id));
+}
+
+export async function publishTicketPanel(){
+  if(!discord.isReady()) throw new Error('Discord is not connected yet.');
+  const settings=await getTicketSettings();
+  if(!settings.enabled) throw new Error('Private tickets are currently disabled.');
+  if(!settings.panel_channel_id) throw new Error('Choose a ticket panel channel first.');
+  if(!settings.open_category_id) throw new Error('Choose an open-ticket category first.');
+  const types=await listTicketTypes(false);
+  if(!types.length) throw new Error('Enable at least one ticket type before publishing the panel.');
+  const channel=await discord.channels.fetch(settings.panel_channel_id).catch(()=>null);
+  if(!channel||!channel.isTextBased()||channel.isDMBased()||(channel as any).isThread?.()){
+    throw new Error('The ticket panel destination must be a regular Discord text channel.');
+  }
+  const payload={
+    content:[
+      '**Need a hand? Open a private ticket 🎫**',
+      '',
+      'Choose the option that best matches what you need. Saucin AI will open a private channel and get the right staff team involved.',
+      '',
+      'Please include the important details up front. Screenshots, clips, message links, and case numbers help us move faster. One issue per ticket keeps the sauce from getting messy. 🌶️'
+    ].join('\n'),
+    components:ticketPanelComponents(types),
+    allowedMentions:{parse:[] as string[]}
+  };
+  let message:any=null;
+  if(settings.panel_message_id){
+    message=await (channel as any).messages.fetch(settings.panel_message_id).catch(()=>null);
+    if(message) await message.edit(payload);
+  }
+  if(!message) message=await (channel as any).send(payload);
+  await setTicketPanelMessage(channel.id,message.id);
+  return {channel_id:channel.id,message_id:message.id};
+}
+
+async function createPrivateTicketChannel(interaction:any,typeKey:string,input:{subject:string;description:string;involvedUserId?:string;evidenceLinks?:string}){
+  if(!interaction.guildId||!interaction.guild) throw new Error('Tickets can only be created inside the Saucin RP Discord server.');
+  const [settings,type]=await Promise.all([getTicketSettings(),getTicketType(typeKey)]);
+  if(!settings.enabled) throw new Error('Ticket creation is currently disabled.');
+  if(!type?.enabled) throw new Error('That ticket type is no longer available.');
+  const categoryId=type.category_override_id||settings.open_category_id;
+  if(!categoryId) throw new Error('Staff have not configured an open-ticket category yet.');
+  const openCount=await countOpenTicketsForUser(interaction.guildId,interaction.user.id);
+  if(openCount>=settings.max_open_per_user){
+    throw new Error(`You already have ${openCount} open ticket${openCount===1?'':'s'}. Please use or close an existing ticket before opening another.`);
+  }
+  let appealedPunishment:any=null;
+  if(typeKey==='punishment-appeal'){
+    const caseNumber=[input.subject,input.description,input.evidenceLinks||''].join(' ').match(/\bPUN-0*(\d+)\b/i);
+    if(caseNumber){
+      const found=await getPunishment(Number(caseNumber[1]));
+      if(found&&String(found.target_user_id)===String(interaction.user.id)) appealedPunishment=found;
+    }
+  }
+  const record=await createTicketRecord({
+    typeKey,guildId:interaction.guildId,openerUserId:interaction.user.id,
+    openerName:interaction.user.globalName||interaction.user.username,
+    subject:input.subject,description:input.description,involvedUserId:input.involvedUserId||appealedPunishment?.target_user_id||null,evidenceLinks:input.evidenceLinks||'',
+    appealedPunishmentId:appealedPunishment?Number(appealedPunishment.id):null
+  });
+  try{
+    const botId=discord.user?.id;
+    if(!botId) throw new Error('Saucin AI is not connected to Discord.');
+    const overwrites:any[]=[
+      {id:interaction.guild.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]},
+      {id:interaction.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]},
+      {id:botId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageChannels,PermissionFlagsBits.ManageMessages,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]}
+    ];
+    for(const roleId of type.support_role_ids){
+      overwrites.push({id:roleId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]});
+    }
+    const channel=await interaction.guild.channels.create({
+      name:ticketChannelName(record.public_id,input.subject),
+      type:ChannelType.GuildText,
+      parent:categoryId,
+      permissionOverwrites:overwrites,
+      reason:`Saucin AI private ticket ${record.public_id}`
+    });
+    const supportMentions=type.support_role_ids.map(id=>`<@&${id}>`).join(' ');
+    let intro=[
+      `${type.emoji||'🎫'} **${record.public_id} · ${type.label}**`,
+      `**Opened by:** <@${interaction.user.id}>`,
+      `**Subject:** ${input.subject}`,
+      input.involvedUserId?`**Involved member:** <@${input.involvedUserId}>`:'',
+      '',
+      input.description,
+      input.evidenceLinks?`\n**Initial links / evidence:**\n${input.evidenceLinks}`:'',
+      '',
+      `**What happens next:** ${type.intake_prompt||'Add any details that will help staff understand the request.'}`,
+      '',
+      supportMentions?`${supportMentions}\nA new ticket is ready for review.`:'Staff can claim this ticket when they begin reviewing it.'
+    ].filter(Boolean).join('\n');
+    if(appealedPunishment){
+      intro+=`\n\n**Linked punishment:** ${appealedPunishment.public_id} · ${punishmentLabel(appealedPunishment.action_type,appealedPunishment.duration_seconds)}\n**Original reason:** ${appealedPunishment.reason}`;
+    }
+    const components=[...ticketControlComponents({...record,...type}),...(appealedPunishment?punishmentReverseComponents(Number(appealedPunishment.id),Number(record.id)):[])];
+    const control=await channel.send({content:intro.slice(0,1950),components,allowedMentions:{roles:type.support_role_ids,users:[interaction.user.id,input.involvedUserId].filter(Boolean)}});
+    await activateTicket(Number(record.id),channel.id,control.id);
+    return {...record,status:'open',channel_id:channel.id,control_message_id:control.id,type_label:type.label};
+  }catch(error){
+    await failTicketCreation(Number(record.id),cleanDiscordError(error));
+    throw error;
+  }
+}
+
+async function createPunishmentAppealTicket(interaction:any,punishment:any,input:{reason:string;evidenceLinks?:string}){
+  if(interaction.user.id!==String(punishment.target_user_id)) throw new Error('Only the member who received this punishment can appeal it from this notice.');
+  const existing=await db.query(`
+    SELECT id,public_id,channel_id,status FROM tickets
+     WHERE appealed_punishment_id=$1 AND status IN ('creating','open','claimed','awaiting_user')
+     ORDER BY created_at DESC LIMIT 1`,[punishment.id]);
+  if(existing.rowCount){
+    const existingGuild=discord.guilds.cache.get(String(punishment.guild_id));
+    const memberStillPresent=existingGuild?await existingGuild.members.fetch(interaction.user.id).catch(()=>null):null;
+    return {...existing.rows[0],existing:true,member_can_access:Boolean(existing.rows[0].channel_id&&memberStillPresent)};
+  }
+  const [settings,type]=await Promise.all([getTicketSettings(),getTicketType('punishment-appeal')]);
+  if(!settings.enabled||!type?.enabled) throw new Error('Punishment appeals are not currently available.');
+  const guild=discord.guilds.cache.get(String(punishment.guild_id));
+  if(!guild) throw new Error('The Saucin RP Discord server is unavailable.');
+  const categoryId=type.category_override_id||settings.open_category_id;
+  if(!categoryId) throw new Error('Staff have not configured the punishment-appeal category yet.');
+  const record=await createTicketRecord({
+    typeKey:type.key,guildId:guild.id,openerUserId:interaction.user.id,openerName:interaction.user.globalName||interaction.user.username,
+    subject:`Appeal ${punishment.public_id}`,description:input.reason,involvedUserId:interaction.user.id,
+    evidenceLinks:input.evidenceLinks||'',appealedPunishmentId:Number(punishment.id)
+  });
+  try{
+    const botId=discord.user?.id;if(!botId) throw new Error('Saucin AI is not connected.');
+    const overwrites:any[]=[
+      {id:guild.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]},
+      {id:interaction.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]},
+      {id:botId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageChannels,PermissionFlagsBits.ManageMessages,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]}
+    ];
+    for(const roleId of type.support_role_ids){
+      overwrites.push({id:roleId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.EmbedLinks]});
+    }
+    const channel=await guild.channels.create({
+      name:ticketChannelName(record.public_id,`appeal-${punishment.public_id}`),type:ChannelType.GuildText,parent:categoryId,
+      permissionOverwrites:overwrites,reason:`Saucin AI punishment appeal ${punishment.public_id}`
+    });
+    const memberStillPresent=await guild.members.fetch(interaction.user.id).catch(()=>null);
+    const supportMentions=type.support_role_ids.map(id=>`<@&${id}>`).join(' ');
+    const control=await channel.send({
+      content:[
+        `⚖️ **${record.public_id} · Appeal of ${punishment.public_id}**`,
+        `**Member:** <@${punishment.target_user_id}> (${punishment.target_user_id})`,
+        `**Original action:** ${punishmentLabel(punishment.action_type,punishment.duration_seconds)}`,
+        `**Original reason:** ${punishment.reason}`,
+        '',
+        '**Appeal statement:**',input.reason,
+        input.evidenceLinks?`\n**New evidence / links:**\n${input.evidenceLinks}`:'',
+        '',
+        memberStillPresent?'The member can continue the appeal in this private channel.':'The member is not currently in the server. This appeal was accepted through their direct-message notice; staff can review and reverse the action here.',
+        supportMentions?`\n${supportMentions}`:''
+      ].filter(Boolean).join('\n').slice(0,1950),
+      components:[...ticketControlComponents({...record,...type}),...punishmentReverseComponents(Number(punishment.id),Number(record.id))],
+      allowedMentions:{roles:type.support_role_ids,users:memberStillPresent?[interaction.user.id]:[]}
+    });
+    await activateTicket(Number(record.id),channel.id,control.id);
+    return {...record,status:'open',channel_id:channel.id,existing:false,member_can_access:Boolean(memberStillPresent)};
+  }catch(error){await failTicketCreation(Number(record.id),cleanDiscordError(error));throw error;}
+}
+
+async function captureTicketMessage(message:Message,ticket:any){
+  await saveTicketMessage(Number(ticket.id),{
+    messageId:message.id,userId:message.author.id,authorName:message.author.globalName||message.author.username,
+    content:message.content,attachments:[...message.attachments.values()].map(item=>({name:item.name,url:item.url,content_type:item.contentType||null,size:item.size})),
+    isBot:message.author.bot,createdAt:message.createdAt
+  });
+}
+
+async function closeDiscordTicket(ticketId:number,interaction:any,reason:string){
+  const ticket=await getTicket(ticketId);
+  if(!ticket) throw new Error('That ticket no longer exists.');
+  if(ticket.status==='closed') return ticket;
+  const settings=await getTicketSettings();
+  const actor=ticketActor(interaction);
+  const transcript=await buildTicketTranscript(ticketId);
+  let transcriptMessage:any=null;
+  if(settings.transcript_channel_id){
+    const destination=await discord.channels.fetch(settings.transcript_channel_id).catch(()=>null);
+    if(destination&&destination.isTextBased()&&!destination.isDMBased()){
+      const attachment=new AttachmentBuilder(Buffer.from(transcript,'utf8'),{name:`${String(ticket.public_id).toLowerCase()}-transcript.txt`});
+      transcriptMessage=await (destination as any).send({
+        content:`**${ticket.public_id} closed**\n**Type:** ${ticket.type_label}\n**Opened by:** ${ticket.opener_name||ticket.opener_user_id}\n**Closed by:** ${actor.name}\n**Reason:** ${reason}`.slice(0,1900),
+        files:[attachment],allowedMentions:{parse:[]}
+      }).catch(()=>null);
+    }
+  }
+  const closed=await closeTicketRecord(ticketId,actor,reason,{
+    text:transcript,channelId:transcriptMessage?.channelId||null,messageId:transcriptMessage?.id||null
+  });
+  if(ticket.channel_id){
+    const channel=await discord.channels.fetch(String(ticket.channel_id)).catch(()=>null) as any;
+    if(channel&&channel.type===ChannelType.GuildText){
+      await channel.send({content:`🔒 **Ticket closed by ${actor.name}.**\n**Reason:** ${reason}\n\nThe complete transcript has been preserved.`,allowedMentions:{parse:[]}}).catch(()=>null);
+      await channel.permissionOverwrites.edit(ticket.opener_user_id,{SendMessages:false}).catch(()=>null);
+      if(settings.closed_category_id) await channel.setParent(settings.closed_category_id,{lockPermissions:false,reason:`Closed ${ticket.public_id}`}).catch(()=>null);
+      await channel.setName(`closed-${String(ticket.public_id).toLowerCase()}`).catch(()=>null);
+    }
+  }
+  return closed;
+}
+
+const punishmentOptions=[
+  {label:'Warning',value:'warning',description:'Send and record an official warning.',emoji:'⚠️'},
+  {label:'Timeout · 10 minutes',value:'timeout-600',description:'Prevent communication for 10 minutes.',emoji:'⏱️'},
+  {label:'Timeout · 1 hour',value:'timeout-3600',description:'Prevent communication for 1 hour.',emoji:'⏱️'},
+  {label:'Timeout · 1 day',value:'timeout-86400',description:'Prevent communication for 24 hours.',emoji:'⏱️'},
+  {label:'Timeout · 7 days',value:'timeout-604800',description:'Prevent communication for 7 days.',emoji:'⏱️'},
+  {label:'Kick',value:'kick',description:'Remove the member from the server.',emoji:'🚪'},
+  {label:'Temporary ban · 1 day',value:'temporary_ban-86400',description:'Ban the member for 24 hours.',emoji:'🔨'},
+  {label:'Temporary ban · 7 days',value:'temporary_ban-604800',description:'Ban the member for 7 days.',emoji:'🔨'},
+  {label:'Temporary ban · 30 days',value:'temporary_ban-2592000',description:'Ban the member for 30 days.',emoji:'🔨'},
+  {label:'Permanent ban',value:'permanent_ban',description:'Ban until an authorized reversal.',emoji:'🛑'}
+];
+
+function parsePunishmentSelection(value:string):{action:TicketPunishmentAction;durationSeconds:number|null}{
+  const [raw,duration]=value.split('-');
+  const action=(raw==='temporary_ban'?'temporary_ban':raw) as TicketPunishmentAction;
+  if(!['warning','timeout','kick','temporary_ban','permanent_ban'].includes(action)) throw new Error('Unsupported punishment type.');
+  const seconds=duration?Number(duration):null;
+  return {action,durationSeconds:Number.isFinite(seconds)&&seconds!>0?seconds:null};
+}
+
+function punishmentLabel(action:string,durationSeconds?:number|null){
+  const duration=durationSeconds?durationSeconds>=86400?`${Math.round(durationSeconds/86400)} day${durationSeconds===86400?'':'s'}`:durationSeconds>=3600?`${Math.round(durationSeconds/3600)} hour${durationSeconds===3600?'':'s'}`:`${Math.round(durationSeconds/60)} minutes`:'';
+  if(action==='temporary_ban') return `${duration} temporary ban`;
+  if(action==='timeout') return `${duration} timeout`;
+  return action.replaceAll('_',' ');
+}
+
+export async function applyTicketPunishment(input:{
+  ticketId?:number|null;guildId:string;targetUserId:string;action:TicketPunishmentAction;durationSeconds?:number|null;
+  reason:string;internalNotes?:string;actor:{userId:string;name:string};sourceModerationCaseId?:number|null;
+}){
+  if(!discord.isReady()) throw new Error('Discord is not connected.');
+  if((input.action==='timeout'||input.action==='temporary_ban')&&!input.durationSeconds){
+    throw new Error(`${input.action==='timeout'?'Timeout':'Temporary ban'} requires a duration.`);
+  }
+  const guild=discord.guilds.cache.get(input.guildId);
+  if(!guild) throw new Error('The configured Discord server is unavailable.');
+  const ticket=input.ticketId?await getTicket(input.ticketId):null;
+  const evidence=ticket?await buildTicketTranscript(Number(ticket.id)):'';
+  const user=await discord.users.fetch(input.targetUserId).catch(()=>null);
+  const record=await createPunishmentRecord({
+    ticketId:input.ticketId||null,sourceModerationCaseId:input.sourceModerationCaseId||null,guildId:input.guildId,
+    targetUserId:input.targetUserId,targetName:user?.globalName||user?.username||null,actionType:input.action,
+    durationSeconds:input.durationSeconds||null,reason:input.reason,internalNotes:input.internalNotes||'',
+    evidenceSnapshot:evidence,issuedByUserId:input.actor.userId,issuedByName:input.actor.name
+  });
+  const auditReason=`${record.public_id} · ${input.reason}`.slice(0,500);
+  try{
+    const label=punishmentLabel(input.action,input.durationSeconds);
+    const externalState:Record<string,unknown>={notice_sent:false};
+    if(user){
+      const notice=await user.send({
+        content:[
+          `**Saucin RP moderation notice · ${record.public_id}**`,
+          `**Action:** ${label}`,
+          `**Reason:** ${input.reason}`,
+          input.durationSeconds?`**Duration:** ${label.replace(/^(.*?)( timeout| temporary ban)$/,'$1')}`:'',
+          '',
+          'If you believe this was issued incorrectly, use the appeal button below. It still works from this DM if the action removes you from the server.'
+        ].filter(Boolean).join('\n'),components:punishmentAppealComponents(Number(record.id)),allowedMentions:{parse:[]}
+      }).catch(()=>null);
+      externalState.notice_sent=Boolean(notice);
+    }
+    let status:'active'|'completed'='active';
+    let expiresAt:Date|null=null;
+    if(input.action==='warning'){
+      status='completed';
+    }else if(input.action==='timeout'){
+      if(!input.durationSeconds) throw new Error('A timeout duration is required.');
+      const member=await guild.members.fetch(input.targetUserId);
+      await member.timeout(input.durationSeconds*1000,auditReason);
+      expiresAt=new Date(Date.now()+input.durationSeconds*1000);
+      externalState.timeout_until=expiresAt.toISOString();
+    }else if(input.action==='kick'){
+      const member=await guild.members.fetch(input.targetUserId);
+      await member.kick(auditReason);
+      status='completed';
+    }else if(input.action==='temporary_ban'){
+      if(!input.durationSeconds) throw new Error('A temporary-ban duration is required.');
+      await guild.members.ban(input.targetUserId,{deleteMessageSeconds:0,reason:auditReason});
+      expiresAt=new Date(Date.now()+input.durationSeconds*1000);
+      externalState.ban_expires_at=expiresAt.toISOString();
+    }else if(input.action==='permanent_ban'){
+      await guild.members.ban(input.targetUserId,{deleteMessageSeconds:0,reason:auditReason});
+    }
+    return await updatePunishmentApplied(Number(record.id),{status,targetName:user?.globalName||user?.username||null,externalState,expiresAt});
+  }catch(error){
+    await markPunishmentFailed(Number(record.id),cleanDiscordError(error));
+    if(user){
+      await user.send({content:`**Update for ${record.public_id}:** Discord did not apply the action. Staff can see the failure and must review it before taking any further action.`,allowedMentions:{parse:[]}}).catch(()=>null);
+    }
+    throw new Error(`${record.public_id} was recorded, but Discord did not apply it: ${cleanDiscordError(error)}`);
+  }
+}
+
+export async function reverseTicketPunishment(punishmentId:number,actor:{userId:string;name:string},reason:string,status:'reversed'|'expired'='reversed'){
+  const punishment=await getPunishment(punishmentId);
+  if(!punishment) throw new Error('Punishment not found.');
+  if(!['active','completed'].includes(String(punishment.status))) throw new Error(`This punishment is already ${punishment.status}.`);
+  const guild=discord.guilds.cache.get(String(punishment.guild_id));
+  if(!guild) throw new Error('The Discord server is unavailable, so the reversal was not recorded.');
+  const auditReason=`${punishment.public_id} ${status==='expired'?'expired':'reversed'} · ${reason}`.slice(0,500);
+  try{
+    if(punishment.action_type==='timeout'){
+      const member=await guild.members.fetch(String(punishment.target_user_id)).catch(()=>null);
+      if(member) await member.timeout(null,auditReason);
+    }else if(['temporary_ban','permanent_ban'].includes(String(punishment.action_type))){
+      const ban=await guild.bans.fetch(String(punishment.target_user_id)).catch(()=>null);
+      if(ban) await guild.members.unban(String(punishment.target_user_id),auditReason);
+    }
+    const updated=await markPunishmentReversed(punishmentId,actor,reason,status);
+    const user=await discord.users.fetch(String(punishment.target_user_id)).catch(()=>null);
+    if(user&&status==='reversed'){
+      await user.send({content:`**${punishment.public_id} has been reversed.**\n**Reason:** ${reason}\n\nThe original action remains in the audit history as reversed.`,allowedMentions:{parse:[]}}).catch(()=>null);
+    }
+    return updated;
+  }catch(error){
+    throw new Error(`Discord could not reverse ${punishment.public_id}: ${cleanDiscordError(error)}`);
+  }
+}
+
+let ticketMaintenanceTimer:NodeJS.Timeout|null=null;
+let ticketMaintenanceRunning=false;
+
+async function runTicketMaintenance(){
+  if(ticketMaintenanceRunning||!discord.isReady()) return;
+  ticketMaintenanceRunning=true;
+  try{
+    const expired=await expiringPunishments(100);
+    for(const punishment of expired){
+      await reverseTicketPunishment(Number(punishment.id),{userId:'saucin-ai-expiry',name:'Saucin AI'},'Scheduled punishment duration completed.','expired')
+        .catch(error=>console.error('[tickets] automatic punishment expiry failed',error));
+    }
+  }finally{ticketMaintenanceRunning=false;}
+}
+
+export function startTicketMaintenanceWorker(){
+  if(ticketMaintenanceTimer) return;
+  ticketMaintenanceTimer=setInterval(()=>void runTicketMaintenance(),30_000);
+  void runTicketMaintenance();
+}
+
+export function stopTicketMaintenanceWorker(){
+  if(ticketMaintenanceTimer) clearInterval(ticketMaintenanceTimer);
+  ticketMaintenanceTimer=null;
+}
+
 
 async function postModerationAudit(detection: ModerationDetection, message: Message) {
   if (!detection.post_to_audit || !detection.audit_channel_id || !discord.isReady()) return;
@@ -682,6 +1147,15 @@ async function handleMessage(message: Message) {
   const evidenceText=messageEvidenceText(message);
   if(!evidenceText) return;
   if (env.DISCORD_GUILD_ID && message.guildId !== env.DISCORD_GUILD_ID) return;
+
+  // Private support tickets are self-contained conversations. Capture their
+  // messages for the case transcript, then stop normal question/issue/moderation
+  // classification from treating sensitive ticket content as public channel data.
+  const linkedTicket=await getTicketByChannel(message.channelId);
+  if(linkedTicket){
+    await captureTicketMessage(message,linkedTicket).catch(error=>console.error('[tickets] failed to capture ticket message',error));
+    return;
+  }
 
   // Issue ticket threads are managed independently from normal channel policies. They may remain
   // Ignored on the Channels page while still collecting player-provided evidence for the linked bug.
@@ -988,10 +1462,256 @@ export async function startDiscord() {
     handleMessage(message).catch((error) => console.error('[discord] message handler failed', error));
   });
   discord.on(Events.InteractionCreate, (interaction) => {
+    if(interaction.isStringSelectMenu()&&interaction.customId==='ticket:create'){
+      void (async()=>{
+        const typeKey=interaction.values[0];
+        const type=await getTicketType(typeKey);
+        if(!type?.enabled) return interaction.reply({content:'That ticket option is no longer available.',ephemeral:true});
+        const modal=new ModalBuilder().setCustomId(`ticket:submit:${typeKey}`).setTitle(type.label.slice(0,45));
+        const subject=new TextInputBuilder().setCustomId('subject').setLabel('Short subject').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100).setPlaceholder('What do you need help with?');
+        const details=new TextInputBuilder().setCustomId('description').setLabel('Explain what happened or what you need').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(2000).setPlaceholder(type.intake_prompt.slice(0,100));
+        const involved=new TextInputBuilder().setCustomId('involved_user_id').setLabel('Involved Discord user ID (optional)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(32).setPlaceholder('Example: 123456789012345678');
+        const evidence=new TextInputBuilder().setCustomId('evidence_links').setLabel('Evidence or links (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000).setPlaceholder('Message links, clips, screenshots, case numbers, etc.');
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(subject),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(details),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(involved),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(evidence)
+        );
+        await interaction.showModal(modal);
+      })().catch(error=>console.error('[tickets] ticket modal failed',error));
+      return;
+    }
+
+    if(interaction.isStringSelectMenu()&&interaction.customId.startsWith('ticket:punishment:')){
+      void (async()=>{
+        const ticketId=Number(interaction.customId.split(':')[2]);
+        const ticket=await getTicket(ticketId);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        if(!(await interactionCanManageTicket(interaction,ticket))) return interaction.reply({content:'Only the assigned staff team can issue a punishment from this ticket.',ephemeral:true});
+        const selection=interaction.values[0];
+        const parsed=parsePunishmentSelection(selection);
+        if(!(await interactionCanUsePunishment(interaction,ticket,parsed.action))) return interaction.reply({content:'Your Discord role is not authorized to use that punishment level.',ephemeral:true});
+        const modal=new ModalBuilder().setCustomId(`ticket:punishment-submit:${ticketId}:${selection}`).setTitle('Issue Discord punishment');
+        const target=new TextInputBuilder().setCustomId('target_user_id').setLabel('Discord user ID').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(32).setPlaceholder('The member receiving the punishment');
+        if(ticket.involved_user_id) target.setValue(String(ticket.involved_user_id).slice(0,32));
+        const reason=new TextInputBuilder().setCustomId('reason').setLabel('Rule and user-facing reason').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000).setPlaceholder('State the rule and clearly explain the decision.');
+        const notes=new TextInputBuilder().setCustomId('internal_notes').setLabel('Internal staff notes (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000).setPlaceholder('Private context, deliberation, or follow-up notes.');
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(target),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(reason),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(notes)
+        );
+        await interaction.showModal(modal);
+      })().catch(error=>console.error('[tickets] punishment selection failed',error));
+      return;
+    }
+
+    if(interaction.isModalSubmit()&&interaction.customId.startsWith('ticket:submit:')){
+      void (async()=>{
+        const typeKey=interaction.customId.split(':')[2];
+        const involved=interaction.fields.getTextInputValue('involved_user_id').trim().replace(/[<@!>]/g,'');
+        if(involved&&!/^\d{15,22}$/.test(involved)) return interaction.reply({content:'The involved member must be a Discord user ID. You can leave it blank if you do not know it.',ephemeral:true});
+        await interaction.deferReply({ephemeral:true});
+        try{
+          const ticket=await createPrivateTicketChannel(interaction,typeKey,{
+            subject:interaction.fields.getTextInputValue('subject'),
+            description:interaction.fields.getTextInputValue('description'),
+            involvedUserId:involved||undefined,
+            evidenceLinks:interaction.fields.getTextInputValue('evidence_links')
+          });
+          return interaction.editReply({content:`Ticket created — <#${ticket.channel_id}>\n\nI’ve got the room ready. Add any screenshots, clips, or details there and the right staff team can take it from here. 🌶️`});
+        }catch(error){
+          return interaction.editReply({content:`I couldn’t open that ticket yet: ${cleanDiscordError(error)}`});
+        }
+      })().catch(error=>console.error('[tickets] ticket submission failed',error));
+      return;
+    }
+
+    if(interaction.isModalSubmit()&&interaction.customId.startsWith('ticket:close-submit:')){
+      void (async()=>{
+        const ticketId=Number(interaction.customId.split(':')[2]);
+        const ticket=await getTicket(ticketId);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        const settings=await getTicketSettings();
+        const isOpener=interaction.user.id===ticket.opener_user_id;
+        if(!(await interactionCanManageTicket(interaction,ticket))&&!(settings.allow_user_close&&isOpener)){
+          return interaction.reply({content:'You do not have permission to close this ticket.',ephemeral:true});
+        }
+        await interaction.deferReply({ephemeral:true});
+        try{
+          await closeDiscordTicket(ticketId,interaction,interaction.fields.getTextInputValue('reason'));
+          return interaction.editReply({content:`${ticket.public_id} is closed and its transcript was preserved.`});
+        }catch(error){return interaction.editReply({content:`I couldn’t close the ticket: ${cleanDiscordError(error)}`});}
+      })().catch(error=>console.error('[tickets] close submission failed',error));
+      return;
+    }
+
+    if(interaction.isModalSubmit()&&interaction.customId.startsWith('ticket:punishment-submit:')){
+      void (async()=>{
+        const parts=interaction.customId.split(':');
+        const ticketId=Number(parts[2]);
+        const selection=parts[3];
+        const ticket=await getTicket(ticketId);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        if(!(await interactionCanManageTicket(interaction,ticket))) return interaction.reply({content:'Only the assigned staff team can issue a punishment.',ephemeral:true});
+        const targetUserId=interaction.fields.getTextInputValue('target_user_id').trim().replace(/[<@!>]/g,'');
+        if(!/^\d{15,22}$/.test(targetUserId)) return interaction.reply({content:'Enter the member’s numeric Discord user ID.',ephemeral:true});
+        const parsed=parsePunishmentSelection(selection);
+        if(!(await interactionCanUsePunishment(interaction,ticket,parsed.action))) return interaction.reply({content:'Your Discord role is not authorized to use that punishment level.',ephemeral:true});
+        await interaction.deferReply({ephemeral:true});
+        try{
+          const punishment=await applyTicketPunishment({
+            ticketId,guildId:String(interaction.guildId),targetUserId,action:parsed.action,durationSeconds:parsed.durationSeconds,
+            reason:interaction.fields.getTextInputValue('reason'),internalNotes:interaction.fields.getTextInputValue('internal_notes'),actor:ticketActor(interaction)
+          });
+          const ticketChannel=ticket.channel_id?await discord.channels.fetch(String(ticket.channel_id)).catch(()=>null):null;
+          if(ticketChannel&&ticketChannel.isTextBased()&&!ticketChannel.isDMBased()){
+            await (ticketChannel as any).send({
+              content:`🛡️ **${punishment.public_id} applied**\n**Member:** <@${punishment.target_user_id}>\n**Action:** ${punishmentLabel(punishment.action_type,punishment.duration_seconds)}\n**Reason:** ${punishment.reason}\n**Issued by:** ${punishment.issued_by_name||punishment.issued_by_user_id}\n\nThis action remains in the audit history even if it is later reversed.`,
+              components:punishmentReverseComponents(Number(punishment.id)),allowedMentions:{parse:[]}
+            }).catch(()=>null);
+          }
+          return interaction.editReply({content:`${punishment.public_id} was successfully applied and added to the permanent case history.`});
+        }catch(error){return interaction.editReply({content:cleanDiscordError(error)});}
+      })().catch(error=>console.error('[tickets] punishment submission failed',error));
+      return;
+    }
+
+    if(interaction.isModalSubmit()&&interaction.customId.startsWith('ticket:reverse-submit:')){
+      void (async()=>{
+        const customParts=interaction.customId.split(':');
+        const punishmentId=Number(customParts[2]);
+        const punishment=await getPunishment(punishmentId);
+        if(!punishment) return interaction.reply({content:'That punishment no longer exists.',ephemeral:true});
+        const authorizationTicketId=Number(customParts[3]||punishment.ticket_id||0);
+        const ticket=authorizationTicketId?await getTicket(authorizationTicketId):null;
+        if(!ticket||!(await interactionCanUsePunishment(interaction,ticket,'reverse'))) return interaction.reply({content:'Your Discord role is not authorized to reverse this punishment.',ephemeral:true});
+        await interaction.deferReply({ephemeral:true});
+        try{
+          const reason=interaction.fields.getTextInputValue('reason');
+          const updated=await reverseTicketPunishment(punishmentId,ticketActor(interaction),reason);
+          const channel=ticket.channel_id?await discord.channels.fetch(String(ticket.channel_id)).catch(()=>null):null;
+          if(channel&&channel.isTextBased()&&!channel.isDMBased()){
+            await (channel as any).send({content:`↩️ **${punishment.public_id} reversed**\n**Reversed by:** ${updated.reversed_by_name||updated.reversed_by_user_id}\n**Reason:** ${reason}\n\nThe original action remains preserved in the audit history as reversed.`,allowedMentions:{parse:[]}}).catch(()=>null);
+          }
+          return interaction.editReply({content:`${punishment.public_id} was reversed successfully.`});
+        }catch(error){return interaction.editReply({content:cleanDiscordError(error)});}
+      })().catch(error=>console.error('[tickets] punishment reversal failed',error));
+      return;
+    }
+
+    if(interaction.isModalSubmit()&&interaction.customId.startsWith('punishment:appeal-submit:')){
+      void (async()=>{
+        const punishmentId=Number(interaction.customId.split(':')[2]);
+        const punishment=await getPunishment(punishmentId);
+        if(!punishment) return interaction.reply({content:'That punishment is no longer available.',ephemeral:true});
+        if(interaction.user.id!==String(punishment.target_user_id)) return interaction.reply({content:'Only the member who received this punishment can appeal it.',ephemeral:true});
+        if(!['active','completed'].includes(String(punishment.status))) return interaction.reply({content:`This punishment is already ${punishment.status}; there is no active action to appeal.`,ephemeral:true});
+        await interaction.deferReply({ephemeral:true});
+        try{
+          const ticket=await createPunishmentAppealTicket(interaction,punishment,{
+            reason:interaction.fields.getTextInputValue('appeal_reason'),evidenceLinks:interaction.fields.getTextInputValue('appeal_evidence')
+          });
+          const access=ticket.member_can_access&&ticket.channel_id?` You can continue in <#${ticket.channel_id}>.`:'';
+          return interaction.editReply({content:ticket.existing?`An active appeal already exists as **${ticket.public_id}**.${access}`:`Your appeal was submitted as **${ticket.public_id}**.${access} Staff can review the original action, your explanation, and reverse it without erasing the audit history.`});
+        }catch(error){return interaction.editReply({content:`I couldn’t open the appeal: ${cleanDiscordError(error)}`});}
+      })().catch(error=>console.error('[tickets] punishment appeal submission failed',error));
+      return;
+    }
+
     if (!interaction.isButton()) return;
     const parts = interaction.customId.split(':');
     const id = Number(parts[2]);
     if (!Number.isInteger(id) || id <= 0) return;
+
+    if(parts[0]==='punishment'&&parts[1]==='appeal'){
+      void (async()=>{
+        const punishment=await getPunishment(id);
+        if(!punishment) return interaction.reply({content:'That punishment is no longer available.',ephemeral:true});
+        if(interaction.user.id!==String(punishment.target_user_id)) return interaction.reply({content:'Only the member who received this punishment can appeal it.',ephemeral:true});
+        if(!['active','completed'].includes(String(punishment.status))) return interaction.reply({content:`This punishment is already ${punishment.status}; there is no active action to appeal.`,ephemeral:true});
+        const modal=new ModalBuilder().setCustomId(`punishment:appeal-submit:${id}`).setTitle(`Appeal ${punishment.public_id}`.slice(0,45));
+        const reason=new TextInputBuilder().setCustomId('appeal_reason').setLabel('Why should staff review this action?').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(2000).setPlaceholder('Explain what you believe was missed or incorrect.');
+        const evidence=new TextInputBuilder().setCustomId('appeal_evidence').setLabel('New evidence or links (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000).setPlaceholder('Message links, clips, screenshots, or other context.');
+        modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(reason),new ActionRowBuilder<TextInputBuilder>().addComponents(evidence));
+        await interaction.showModal(modal);
+      })().catch(error=>console.error('[tickets] punishment appeal modal failed',error));
+      return;
+    }
+
+    if(parts[0]==='ticket'&&parts[1]==='claim'){
+      void (async()=>{
+        const ticket=await getTicket(id);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        if(!(await interactionCanManageTicket(interaction,ticket))) return interaction.reply({content:'Only the assigned staff team can claim this ticket.',ephemeral:true});
+        const actor=ticketActor(interaction);
+        await claimTicket(id,actor);
+        await interaction.reply({content:`🙋 **${actor.name} claimed ${ticket.public_id}.**`,allowedMentions:{parse:[]}});
+      })().catch(error=>console.error('[tickets] claim failed',error));
+      return;
+    }
+
+    if(parts[0]==='ticket'&&parts[1]==='waiting'){
+      void (async()=>{
+        const ticket=await getTicket(id);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        if(!(await interactionCanManageTicket(interaction,ticket))) return interaction.reply({content:'Only the assigned staff team can change this ticket status.',ephemeral:true});
+        const actor=ticketActor(interaction);
+        await setTicketStatus(id,'awaiting_user',actor);
+        await interaction.reply({content:`⏳ **Waiting on <@${ticket.opener_user_id}>.** Add the requested information here when you’re ready.`,allowedMentions:{users:[ticket.opener_user_id]}});
+      })().catch(error=>console.error('[tickets] waiting status failed',error));
+      return;
+    }
+
+    if(parts[0]==='ticket'&&parts[1]==='close'){
+      void (async()=>{
+        const ticket=await getTicket(id);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        const settings=await getTicketSettings();
+        const allowed=await interactionCanManageTicket(interaction,ticket)||settings.allow_user_close&&interaction.user.id===ticket.opener_user_id;
+        if(!allowed) return interaction.reply({content:'You do not have permission to close this ticket.',ephemeral:true});
+        const modal=new ModalBuilder().setCustomId(`ticket:close-submit:${id}`).setTitle(`Close ${ticket.public_id}`.slice(0,45));
+        const reason=new TextInputBuilder().setCustomId('reason').setLabel('Closing reason').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000).setPlaceholder('Summarize the outcome or why the ticket is being closed.');
+        modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(reason));
+        await interaction.showModal(modal);
+      })().catch(error=>console.error('[tickets] close modal failed',error));
+      return;
+    }
+
+    if(parts[0]==='ticket'&&parts[1]==='punish'){
+      void (async()=>{
+        const ticket=await getTicket(id);
+        if(!ticket) return interaction.reply({content:'That ticket no longer exists.',ephemeral:true});
+        if(!ticket.allow_punishments) return interaction.reply({content:'Punishment controls are not enabled for this ticket type.',ephemeral:true});
+        if(!(await interactionCanManageTicket(interaction,ticket))) return interaction.reply({content:'Only the assigned staff team can issue a punishment.',ephemeral:true});
+        const allowedOptions=[];
+        for(const option of punishmentOptions){
+          const parsed=parsePunishmentSelection(option.value);
+          if(await interactionCanUsePunishment(interaction,ticket,parsed.action)) allowedOptions.push(option);
+        }
+        if(!allowedOptions.length) return interaction.reply({content:'Your Discord role can access this ticket but has not been authorized for any punishment level.',ephemeral:true});
+        const menu=new StringSelectMenuBuilder().setCustomId(`ticket:punishment:${id}`).setPlaceholder('Choose a Discord punishment').addOptions(allowedOptions);
+        await interaction.reply({content:'Choose the action to apply. You will review the member ID and reason before anything happens.',components:[new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)],ephemeral:true});
+      })().catch(error=>console.error('[tickets] punishment menu failed',error));
+      return;
+    }
+
+    if(parts[0]==='ticket'&&parts[1]==='reverse'){
+      void (async()=>{
+        const punishment=await getPunishment(id);
+        if(!punishment) return interaction.reply({content:'That punishment no longer exists.',ephemeral:true});
+        const authorizationTicketId=Number(parts[3]||punishment.ticket_id||0);
+        const ticket=authorizationTicketId?await getTicket(authorizationTicketId):null;
+        if(!ticket||!(await interactionCanUsePunishment(interaction,ticket,'reverse'))) return interaction.reply({content:'Your Discord role is not authorized to reverse this punishment.',ephemeral:true});
+        if(!['active','completed'].includes(String(punishment.status))) return interaction.reply({content:`${punishment.public_id} is already ${punishment.status}.`,ephemeral:true});
+        const modal=new ModalBuilder().setCustomId(`ticket:reverse-submit:${id}${authorizationTicketId?`:${authorizationTicketId}`:''}`).setTitle(`Reverse ${punishment.public_id}`.slice(0,45));
+        const reason=new TextInputBuilder().setCustomId('reason').setLabel('Required reversal reason').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000).setPlaceholder('Explain why the punishment is being reversed.');
+        modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(reason));
+        await interaction.showModal(modal);
+      })().catch(error=>console.error('[tickets] reversal modal failed',error));
+      return;
+    }
 
     if (parts[0] === 'issue' && parts[1] === 'me-too') {
       void (async () => {

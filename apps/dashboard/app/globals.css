@@ -135,6 +135,12 @@ html,body{background:var(--bg);font-family:"IBM Plex Sans",Inter,ui-sans-serif,s
 }
 .consoleNav::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
 
+/* Saucin AI v1.6 — private ticket routing */
+.roleCheckGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;max-height:240px;overflow:auto;padding:7px;border:1px solid #222229;border-radius:9px;background:#0e0e12;scrollbar-width:none}.roleCheckGrid::-webkit-scrollbar{display:none}.roleCheck{display:flex;align-items:center;gap:7px;padding:7px 8px;border:1px solid #23232a;border-radius:7px;color:#a2a2ac;font-size:10.5px;cursor:pointer}.roleCheck:hover{background:#15151a;border-color:#37313d}.roleCheck input{margin:0;accent-color:#9562bd}.roleCheck i{width:7px;height:7px;border-radius:50%;background:#555;flex:0 0 7px}@media(max-width:950px){.roleCheckGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:620px){.roleCheckGrid{grid-template-columns:1fr}}
+
+/* Keep the sidebar scrollbar hidden after ticket styles. */
+.consoleSidebar{overflow:hidden}.consoleNav{scrollbar-width:none;-ms-overflow-style:none}.consoleNav::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
+
 
 /* Saucin AI v1.2.9 — pending AI authoring feedback */
 .largeButton.isPending,

@@ -6,6 +6,7 @@ const links=[
   ['/settings/bot','Bot & AI','settings.bot.manage'],
   ['/settings/knowledge','Knowledge','settings.knowledge.manage'],
   ['/settings/issues','Issues & Tickets','settings.issues.manage'],
+  ['/settings/tickets','Private Tickets','settings.tickets.manage'],
   ['/settings/suggestions','Suggestions','settings.suggestions.manage'],
   ['/settings/moderation','Moderation','moderation.configure'],
   ['/settings/permissions','Permissions','settings.permissions.manage']

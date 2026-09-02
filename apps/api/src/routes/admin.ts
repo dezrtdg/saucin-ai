@@ -1,13 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { ChannelType } from 'discord.js';
 import { db } from '../db.js';
 import { env } from '../env.js';
-import { discord, ensureIssueDiscordThread, getCachedDiscordChannelMetadata, postIssueStatusUpdate, recoverDiscordConversationContext, syncDiscordChannels, syncIssueDiscordPost } from '../discord/client.js';
+import { applyTicketPunishment, discord, ensureIssueDiscordThread, getCachedDiscordChannelMetadata, postIssueStatusUpdate, publishTicketPanel, recoverDiscordConversationContext, reverseTicketPunishment, syncDiscordChannels, syncIssueDiscordPost } from '../discord/client.js';
 import { invalidateBotBehaviorSettingsCache } from '../services/botSettings.js';
 import { backfillKnowledgeEmbeddings, buildKnowledgeDraft, deriveKnowledgeGapQuestion, improveKnowledgeRetrieval, refreshKnowledgeEmbedding } from '../services/knowledge.js';
 import { buildIssueDraft, linkCandidateToIssue, refreshIssueEmbedding, setIssueObservationStatus } from '../services/issues.js';
 import { allPermissionKeys, parseDashboardIdentity, permissionCatalog, permissionSnapshot, permissionSystemConfigured, rolePermissionMapForDisplay, saveRolePermissions } from '../services/permissions.js';
 import { clearModerationDiagnostics, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
+import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -68,6 +70,17 @@ function routeRequirement(method: string, route: string): string[] | null {
     'PUT /api/issues/candidates/:id': ['issues.triage'],
     'POST /api/issues/candidates/:id/link': ['issues.triage'],
     'POST /api/issues/candidates/:id/promote': ['issues.triage','issues.create'],
+    'GET /api/tickets': ['tickets.view'],
+    'GET /api/tickets/:id': ['tickets.view'],
+    'PUT /api/tickets/:id/status': ['tickets.manage'],
+    'GET /api/tickets/settings': ['settings.tickets.manage'],
+    'PUT /api/tickets/settings': ['settings.tickets.manage'],
+    'PUT /api/tickets/types/:key': ['settings.tickets.manage'],
+    'POST /api/tickets/panel': ['settings.tickets.manage'],
+    'GET /api/punishments': ['moderation.view'],
+    'GET /api/punishments/:id': ['moderation.view'],
+    'POST /api/tickets/:id/punishments': ['moderation.punish'],
+    'POST /api/punishments/:id/reverse': ['moderation.reverse'],
     'GET /api/permissions/roles': ['settings.permissions.manage'],
     'PUT /api/permissions/roles/:roleId': ['settings.permissions.manage'],
     'GET /api/moderation/cases': ['moderation.view'],
@@ -273,6 +286,23 @@ async function discordRoles() {
     .map(role => ({ id: role.id, name: role.name, position: role.position, color: role.hexColor }));
 }
 
+async function discordTicketDestinations() {
+  if (!env.DISCORD_GUILD_ID || !discord.isReady()) return { text_channels: [], categories: [] };
+  const guild = discord.guilds.cache.get(env.DISCORD_GUILD_ID);
+  if (!guild) return { text_channels: [], categories: [] };
+  const channels = await guild.channels.fetch();
+  const categories=[...channels.values()].filter(channel=>channel?.type===ChannelType.GuildCategory).map(channel=>({
+    id:String(channel!.id),name:String((channel as any).name||channel!.id),position:Number((channel as any).position||0)
+  })).sort((a,b)=>a.position-b.position||a.name.localeCompare(b.name));
+  const categoryNames=new Map(categories.map(item=>[item.id,item.name]));
+  const text_channels=[...channels.values()].filter(channel=>channel?.type===ChannelType.GuildText||channel?.type===ChannelType.GuildAnnouncement).map(channel=>({
+    id:String(channel!.id),name:String((channel as any).name||channel!.id),category_id:(channel as any).parentId?String((channel as any).parentId):null,
+    category_name:(channel as any).parentId?categoryNames.get(String((channel as any).parentId))||null:null,
+    position:Number((channel as any).position||0)
+  })).sort((a,b)=>(a.category_name||'').localeCompare(b.category_name||'')||a.position-b.position||a.name.localeCompare(b.name));
+  return { text_channels, categories };
+}
+
 export async function adminRoutes(app: FastifyInstance) {
   app.register(async (admin) => {
     admin.addHook('onRequest', requireApiKey);
@@ -312,6 +342,124 @@ export async function adminRoutes(app: FastifyInstance) {
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : 'unable to save role permissions' });
       }
+    });
+
+    admin.get('/api/tickets', async (request) => {
+      const query=z.object({
+        status:z.enum(['creating','open','claimed','awaiting_user','closed','failed']).optional(),
+        type:z.string().trim().max(64).optional(),limit:z.coerce.number().int().min(1).max(500).optional()
+      }).parse(request.query);
+      const [tickets,types]=await Promise.all([listTickets({status:query.status,typeKey:query.type,limit:query.limit}),listTicketTypes(true)]);
+      return {tickets,types};
+    });
+
+    admin.get('/api/tickets/:id', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const ticket=await getTicket(params.id);
+      if(!ticket) return reply.code(404).send({error:'ticket not found'});
+      const access=await requestPermissionSnapshot(request);
+      if(!access.owner_bypass&&!access.permissions.includes('tickets.transcripts')){
+        ticket.messages=[];
+        ticket.transcript_text=null;
+      }
+      return ticket;
+    });
+
+    admin.put('/api/tickets/:id/status', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const body=z.object({status:z.enum(['open','claimed','awaiting_user']),note:z.string().trim().max(1000).optional()}).parse(request.body);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      const actor={userId:identity.userId||'dashboard',name:'Dashboard staff'};
+      const updated=body.status==='claimed'?await claimTicket(params.id,actor):await setTicketStatus(params.id,body.status,actor,body.note);
+      if(!updated) return reply.code(404).send({error:'ticket not found or already closed'});
+      return updated;
+    });
+
+    admin.get('/api/tickets/settings', async () => {
+      const [settings,types,roles,destinations]=await Promise.all([
+        getTicketSettings(),listTicketTypes(true),discordRoles(),discordTicketDestinations()
+      ]);
+      return {settings,types,roles,...destinations};
+    });
+
+    admin.put('/api/tickets/settings', async (request) => {
+      const body=z.object({
+        enabled:z.boolean(),panel_channel_id:z.string().trim().max(64).nullable().optional(),
+        open_category_id:z.string().trim().max(64).nullable().optional(),closed_category_id:z.string().trim().max(64).nullable().optional(),
+        transcript_channel_id:z.string().trim().max(64).nullable().optional(),max_open_per_user:z.coerce.number().int().min(1).max(10),
+        allow_user_close:z.boolean(),warning_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
+        timeout_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
+        kick_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
+        ban_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
+        reversal_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([])
+      }).parse(request.body);
+      return updateTicketSettings({
+        enabled:body.enabled,panel_channel_id:body.panel_channel_id||null,open_category_id:body.open_category_id||null,
+        closed_category_id:body.closed_category_id||null,transcript_channel_id:body.transcript_channel_id||null,
+        max_open_per_user:body.max_open_per_user,allow_user_close:body.allow_user_close,
+        warning_role_ids:body.warning_role_ids,timeout_role_ids:body.timeout_role_ids,kick_role_ids:body.kick_role_ids,
+        ban_role_ids:body.ban_role_ids,reversal_role_ids:body.reversal_role_ids
+      });
+    });
+
+    admin.put('/api/tickets/types/:key', async (request,reply) => {
+      const params=z.object({key:slug}).parse(request.params);
+      const body=z.object({
+        label:z.string().trim().min(1).max(100),description:z.string().trim().max(300),emoji:z.string().trim().max(40).nullable().optional(),
+        intake_prompt:z.string().trim().min(1).max(1000),support_role_ids:z.array(z.string().trim().min(1).max(64)).max(100),
+        category_override_id:z.string().trim().max(64).nullable().optional(),allow_punishments:z.boolean(),enabled:z.boolean(),
+        sort_order:z.coerce.number().int().min(-10000).max(10000)
+      }).parse(request.body);
+      const updated=await updateTicketType(params.key,body);
+      if(!updated) return reply.code(404).send({error:'ticket type not found'});
+      return updated;
+    });
+
+    admin.post('/api/tickets/panel', async (_request,reply) => {
+      try{return {ok:true,...await publishTicketPanel()};}
+      catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'unable to publish ticket panel'});}
+    });
+
+    admin.get('/api/punishments', async (request) => {
+      const query=z.object({
+        ticket_id:z.coerce.number().int().positive().optional(),target_user_id:z.string().trim().max(64).optional(),
+        status:z.enum(['pending','active','completed','expired','reversed','failed','superseded']).optional(),
+        limit:z.coerce.number().int().min(1).max(500).optional()
+      }).parse(request.query);
+      return {punishments:await listPunishments({ticketId:query.ticket_id,targetUserId:query.target_user_id,status:query.status,limit:query.limit})};
+    });
+
+    admin.get('/api/punishments/:id', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const punishment=await getPunishment(params.id);
+      if(!punishment) return reply.code(404).send({error:'punishment not found'});
+      return punishment;
+    });
+
+    admin.post('/api/tickets/:id/punishments', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const ticket=await getTicket(params.id);
+      if(!ticket) return reply.code(404).send({error:'ticket not found'});
+      if(!ticket.allow_punishments) return reply.code(400).send({error:'punishments are not enabled for this ticket type'});
+      const body=z.object({
+        target_user_id:z.string().trim().regex(/^\d{15,22}$/),action:z.enum(['warning','timeout','kick','temporary_ban','permanent_ban']),
+        duration_seconds:z.coerce.number().int().positive().max(2592000).nullable().optional(),reason:z.string().trim().min(3).max(1000),
+        internal_notes:z.string().trim().max(3000).optional(),source_moderation_case_id:z.coerce.number().int().positive().nullable().optional()
+      }).parse(request.body);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      try{return await applyTicketPunishment({
+        ticketId:params.id,guildId:String(ticket.guild_id),targetUserId:body.target_user_id,action:body.action,
+        durationSeconds:body.duration_seconds||null,reason:body.reason,internalNotes:body.internal_notes||'',
+        actor:{userId:identity.userId||'dashboard',name:'Dashboard staff'},sourceModerationCaseId:body.source_moderation_case_id||null
+      });}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'unable to apply punishment'});}
+    });
+
+    admin.post('/api/punishments/:id/reverse', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const body=z.object({reason:z.string().trim().min(3).max(1000)}).parse(request.body);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      try{return await reverseTicketPunishment(params.id,{userId:identity.userId||'dashboard',name:'Dashboard staff'},body.reason);}
+      catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'unable to reverse punishment'});}
     });
 
     admin.get('/api/moderation/cases', async (request) => {

@@ -66,6 +66,34 @@ export async function POST(request:Request){
         })});
         break;
 
+      case 'tickets.settings.update':
+        await call('/api/tickets/settings',{method:'PUT',body:JSON.stringify({
+          enabled:checked(formData,'enabled'),panel_channel_id:value(formData,'panel_channel_id')||null,
+          open_category_id:value(formData,'open_category_id')||null,closed_category_id:value(formData,'closed_category_id')||null,
+          transcript_channel_id:value(formData,'transcript_channel_id')||null,
+          max_open_per_user:Math.max(1,Math.min(10,integer(formData,'max_open_per_user',2))),
+          allow_user_close:checked(formData,'allow_user_close'),
+          warning_role_ids:unique(formData,'warning_role_ids'),timeout_role_ids:unique(formData,'timeout_role_ids'),
+          kick_role_ids:unique(formData,'kick_role_ids'),ban_role_ids:unique(formData,'ban_role_ids'),
+          reversal_role_ids:unique(formData,'reversal_role_ids')
+        })});
+        break;
+
+      case 'tickets.type.update':
+        if(!id) return NextResponse.json({error:'Missing ticket type.'},{status:400});
+        await call(`/api/tickets/types/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({
+          label:value(formData,'label'),description:value(formData,'description'),emoji:value(formData,'emoji')||null,
+          intake_prompt:value(formData,'intake_prompt'),support_role_ids:unique(formData,'support_role_ids'),
+          category_override_id:value(formData,'category_override_id')||null,
+          allow_punishments:checked(formData,'allow_punishments'),enabled:checked(formData,'enabled'),
+          sort_order:integer(formData,'sort_order',100)
+        })});
+        break;
+
+      case 'tickets.panel.publish':
+        await call('/api/tickets/panel',{method:'POST',body:JSON.stringify({})});
+        break;
+
       case 'issues.template.update':
         if(!id) return NextResponse.json({error:'Missing issue status.'},{status:400});
         await call(`/api/issues/templates/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({

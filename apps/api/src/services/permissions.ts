@@ -30,10 +30,18 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'suggestions.ai', label: 'Use Suggestions AI', description: 'Create or expand suggestion drafts with AI while preserving the original community submission.' },
     { key: 'suggestions.forum', label: 'Manage suggestion discussions', description: 'Create and synchronize linked Discord forum discussions.' }
   ]},
+  { key: 'tickets', label: 'Private Tickets', permissions: [
+    { key: 'tickets.view', label: 'View tickets', description: 'View private ticket details, participants, messages, and status.' },
+    { key: 'tickets.manage', label: 'Manage tickets', description: 'Claim tickets, change status, add staff notes, and coordinate responses.' },
+    { key: 'tickets.close', label: 'Close tickets', description: 'Close private tickets and preserve their transcripts.' },
+    { key: 'tickets.transcripts', label: 'View transcripts', description: 'View stored ticket conversation history and transcript records.' }
+  ]},
   { key: 'moderation', label: 'Moderation', permissions: [
     { key: 'moderation.view', label: 'View moderation', description: 'View moderation detections, cases, player feedback, and history.' },
     { key: 'moderation.review', label: 'Review moderation cases', description: 'Confirm, dismiss, reopen, and annotate moderation cases.' },
     { key: 'moderation.actions', label: 'Take moderation actions', description: 'Allow live reminders, warnings, message deletion, and Discord timeouts when enforcement is enabled.' },
+    { key: 'moderation.punish', label: 'Issue ticket punishments', description: 'Issue warnings, timeouts, kicks, and bans from reviewed tickets.' },
+    { key: 'moderation.reverse', label: 'Reverse punishments', description: 'Reverse an issued punishment while preserving the complete audit history.' },
     { key: 'moderation.configure', label: 'Configure moderation', description: 'Change moderation mode, thresholds, exemptions, diagnostics, and rule-specific detection settings.' }
   ]},
   { key: 'knowledge', label: 'Knowledge', permissions: [
@@ -57,6 +65,7 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'settings.knowledge.manage', label: 'Manage knowledge settings', description: 'Manage content types, categories, audiences, and role mappings.' },
     { key: 'settings.issues.manage', label: 'Manage issue settings', description: 'Manage issue categories, ticket automation, and public response templates.' },
     { key: 'settings.suggestions.manage', label: 'Manage suggestion settings', description: 'Configure the Discord suggestions forum, discussion capture, and status synchronization.' },
+    { key: 'settings.tickets.manage', label: 'Manage private ticket settings', description: 'Configure the ticket panel, private categories, transcripts, routing roles, and ticket types.' },
     { key: 'settings.permissions.manage', label: 'Manage permissions', description: 'Change which Discord roles can access dashboard modules and actions.' }
   ]},
   { key: 'planned', label: 'Planned modules', permissions: [
@@ -83,7 +92,10 @@ const implications: Record<string, string[]> = {
   'settings.permissions.manage': ['settings.view'],
   'suggestions.manage': ['suggestions.view','suggestions.ai','suggestions.forum'],
   'suggestions.ai': ['suggestions.view'], 'suggestions.forum': ['suggestions.view'],
-  'moderation.review': ['moderation.view'], 'moderation.actions': ['moderation.view'], 'moderation.configure': ['moderation.view','settings.view'],
+  'tickets.manage': ['tickets.view'], 'tickets.close': ['tickets.view'], 'tickets.transcripts': ['tickets.view'],
+  'settings.tickets.manage': ['settings.view','tickets.view'],
+  'moderation.review': ['moderation.view'], 'moderation.actions': ['moderation.view'], 'moderation.punish': ['moderation.view','tickets.view'],
+  'moderation.reverse': ['moderation.view','tickets.view'], 'moderation.configure': ['moderation.view','settings.view'],
   'announcements.manage': ['announcements.view'], 'txadmin.manage': ['txadmin.view','settings.view']
 };
 
