@@ -1,71 +1,89 @@
 # Saucin AI Git Update Workflow
 
-Saucin AI updates can be delivered as standard Git patch files.
+GitHub is the canonical source for Saucin AI. ChatGPT can update the connected private repository directly, and the Unraid server pulls those changes.
 
 ## Normal update
 
-Put the downloaded patch somewhere outside the repository, for example:
-
-```text
-/mnt/user/appdata/saucin-ai/updates/
-```
-
-Then run:
+From Unraid:
 
 ```bash
 cd /mnt/user/appdata/saucin-ai/project
-
-./scripts/install-git-update.sh \
-  /mnt/user/appdata/saucin-ai/updates/saucin-ai-v1.3.6.patch \
-  v1.3.6
+./scripts/update.sh
 ```
 
-The installer:
+The updater automatically:
 
-1. Checks that the repository is clean.
-2. Validates the patch before changing files.
-3. Applies it.
-4. Detects API/dashboard changes.
-5. Builds only affected Docker services.
-6. Recreates affected containers.
-7. Commits the update.
-8. Creates a version tag.
-9. Pushes `main` and the version tag to GitHub.
+1. Refuses to continue if the local Git working tree has uncommitted changes.
+2. Fetches `origin/main` and Git tags.
+3. Shows the commits and files that changed.
+4. Determines whether the API, dashboard, both, or neither require a Docker rebuild.
+5. Fast-forwards the local checkout.
+6. Builds only the affected application service(s).
+7. Recreates only the affected application service(s).
+8. Waits briefly and verifies the affected containers remain running.
+9. Shows the final Docker status.
 
-If the Docker build fails, the update is **not committed or pushed**.
+PostgreSQL and Redis are not force-recreated simply because `docker-compose.yml` changed. Infrastructure changes should be handled deliberately.
 
-## Before an update
+## Preview an update
 
-You can always verify the repository is clean:
+To fetch GitHub and see what would change without installing anything:
+
+```bash
+./scripts/update.sh --check
+```
+
+## Force a clean Docker build
+
+Normally Docker's build cache is used so updates are faster. If a clean rebuild is needed:
+
+```bash
+./scripts/update.sh --no-cache
+```
+
+## Failed build/start rollback
+
+Before updating, the script records the current commit. If the new API/dashboard build fails, `docker compose up` fails, or an affected container does not remain running after startup, the updater:
+
+1. Resets the Unraid source checkout to the previous commit.
+2. Rebuilds the previous affected service(s).
+3. Recreates those previous service(s).
+4. Displays Docker status/logs if rollback also has a problem.
+
+The updater never force-pushes or rewrites GitHub. Rollback is local to the Unraid deployment.
+
+Database migrations used by Saucin AI should remain backward-compatible/additive so application rollback remains safe.
+
+## Local changes
+
+The updater intentionally stops when this command is not clean:
 
 ```bash
 git status
 ```
 
-Expected:
+This prevents an update from overwriting work performed directly on the server.
 
-```text
-nothing to commit, working tree clean
-```
-
-## View installed versions
+## View versions/history
 
 ```bash
 git log --oneline --decorate -10
 git tag --list --sort=-version:refname
 ```
 
-## Restore the last committed version after a failed, uncommitted patch
+## Legacy patch installer
 
-Only use this when the installer explicitly reports that the build failed and
-you want to discard the attempted patch:
+`scripts/install-git-update.sh` remains in the repository for older patch-based updates, but normal connected-GitHub development should use `scripts/update.sh` instead.
 
-```bash
-git reset --hard HEAD
-git clean -fd
+## Environment overrides
+
+Optional variables:
+
+```text
+SAUCIN_PROJECT_DIR
+SAUCIN_GIT_REMOTE
+SAUCIN_GIT_BRANCH
+SAUCIN_UPDATE_WAIT_SECONDS
 ```
 
-## GitHub is the canonical copy
-
-After a successful installer run, the update is committed and pushed to the
-private GitHub repository automatically.
+The production defaults are already set for the current Unraid Saucin AI installation.
