@@ -66,6 +66,8 @@ Recommended bot permissions:
 - View Channels
 - Send Messages
 - Send Messages in Threads
+- Create Public Threads
+- Manage Threads
 - Read Message History
 - Embed Links
 
@@ -188,7 +190,7 @@ Dashboard modes:
 - `monitor` — store/classify only; never reply.
 - `questions` — answer verified questions from approved knowledge.
 - `issues` — detect and respond to matching known issues.
-- `suggestions` — detect suggestions silently.
+- `suggestions` — detect suggestions, cluster duplicates, and route new ideas into their linked forum discussion when configured.
 - `full` — questions + issues + suggestions.
 - `ignored` — do not store or process the channel.
 
@@ -200,7 +202,20 @@ Recommended rollout:
 - `#suggestions` → suggestions
 - private staff areas → ignored unless intentionally monitored
 
-## 8. OpenAI
+## 8. Suggestions workflow
+
+In **Settings → Suggestions**, choose a Discord Forum or Media channel. When automatic forum discussions are enabled:
+
+- A new idea detected in Discord or created from the dashboard receives one linked discussion.
+- Similar ideas add unique supporters and source messages instead of creating duplicate dashboard records.
+- Player-created posts inside the configured forum are linked directly; duplicate forum posts point back to the existing primary discussion.
+- Replies, links, and attachment URLs remain attached to that idea.
+- AI can create or expand an editable staff-facing draft while every original submission remains preserved.
+- Saving an edit refreshes the primary Discord post, and status changes add a readable timeline update.
+
+The bot needs **Create Public Threads**, **Send Messages in Threads**, and **Manage Threads** in the configured forum.
+
+## 9. OpenAI
 
 `OPENAI_API_KEY` is optional for the first boot. Without it, Discord monitoring and local fallback classification still work, but generated answers are disabled.
 
