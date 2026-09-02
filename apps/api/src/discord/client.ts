@@ -919,15 +919,23 @@ export async function startDiscord() {
         const suggestion=await getSuggestion(id);
         if(!suggestion) return interaction.reply({content:'That suggestion is no longer available.',ephemeral:true});
         await interaction.deferUpdate();
+        let creationError:unknown=null;
         const threadId=await ensureSuggestionDiscordThread(id).catch(error=>{
+          creationError=error;
           console.warn('[suggestions] confirmation could not create forum discussion',error);
           return null;
         });
         const current=await getSuggestion(id)||suggestion;
         const publicId=current.public_id||`SUG-${id}`;
         if(!threadId){
+          const settings=await getSuggestionAutomationSettings().catch(()=>null);
+          const missingConfiguration=!settings?.auto_create_forum_posts||!settings?.forum_channel_id;
+          const content=missingConfiguration
+            ? `I saved **${publicId} · ${current.title}**, but the suggestion board isn’t set up yet. Staff can choose a Discord Forum or Media channel in **Settings → Suggestions**, then try again.`
+            : `I saved **${publicId} · ${current.title}**, but Discord wouldn’t let me post it to the suggestion board yet. Staff should check my forum permissions, then try again. I need **View Channel**, **Send Messages**, **Send Messages in Threads**, **Create Public Threads**, and **Manage Threads**.`;
+          if(creationError) console.warn('[suggestions] forum creation needs staff attention',creationError);
           return interaction.editReply({
-            content:`I saved **${publicId} · ${current.title}**, but I can’t plate it on the suggestion board yet because the Discord forum has not been configured. Staff can finish that from **Settings → Suggestions**.`,
+            content,
             components:suggestionConfirmationButtons(id),
             allowedMentions:{parse:[]}
           });
