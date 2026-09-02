@@ -24,7 +24,14 @@ import {
   searchKnowledge
 } from '../services/knowledge.js';
 import { addIssueReport, confirmIssueCandidate, findKnownIssue, getIssue, getIssueAutomationSettings, getIssuePublicMessage, processIssueThreadMessage, recordIssueCandidate } from '../services/issues.js';
-import { addSuggestionSupport, getSuggestion, recordSuggestion } from '../services/suggestions.js';
+import {
+  addSuggestionSupport,
+  getSuggestion,
+  getSuggestionAutomationSettings,
+  getSuggestionPublicMessage,
+  processSuggestionThreadMessage,
+  recordSuggestion
+} from '../services/suggestions.js';
 import { processModerationMessage, recordModerationIngressDiagnostic, type ModerationDetection } from '../services/moderation.js';
 
 export const discord = new Client({
@@ -70,10 +77,19 @@ function candidateButtons(candidateId: number) {
   )];
 }
 
-function suggestionButtons(suggestionId:number) {
-  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+function suggestionButtons(suggestionId:number,threadId?:string|null) {
+  const row=new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`suggestion:support:${suggestionId}`).setLabel('I support this idea').setStyle(ButtonStyle.Secondary)
-  )];
+  );
+  if(threadId&&env.DISCORD_GUILD_ID){
+    row.addComponents(
+      new ButtonBuilder()
+        .setLabel('Open suggestion discussion')
+        .setStyle(ButtonStyle.Link)
+        .setURL(`https://discord.com/channels/${env.DISCORD_GUILD_ID}/${threadId}`)
+    );
+  }
+  return [row];
 }
 
 function trimContext(value: string, max = 1200) {
@@ -96,6 +112,14 @@ function getChannelName(channel: unknown): string | undefined {
   if (!channel || typeof channel !== 'object' || !('name' in channel)) return undefined;
   const name = (channel as { name?: unknown }).name;
   return typeof name === 'string' && name.trim() ? name : undefined;
+}
+
+function messageEvidenceText(message:Message){
+  const attachmentLines=[...message.attachments.values()].map(attachment=>{
+    const label=attachment.name?String(attachment.name):'attachment';
+    return `[${label}] ${attachment.url}`;
+  });
+  return [message.content.trim(),...attachmentLines].filter(Boolean).join('\n').trim();
 }
 
 function isConfigurableChannel(channel: GuildBasedChannel) {
@@ -318,6 +342,17 @@ export async function getIssueIdForDiscordThread(channelId: string): Promise<num
   return result.rowCount ? Number(result.rows[0].id) : null;
 }
 
+export async function getSuggestionIdForDiscordThread(channelId:string):Promise<number|null>{
+  const result=await db.query('SELECT id FROM suggestions WHERE discord_thread_id=$1 LIMIT 1',[channelId]);
+  return result.rowCount?Number(result.rows[0].id):null;
+}
+
+function suggestionThreadName(suggestion:any){
+  const id=suggestion.public_id||`SUG-${suggestion.id}`;
+  const status=String(suggestion.status||'candidate').replaceAll('_',' ');
+  return `[${status}] ${id} · ${suggestion.title}`.slice(0,100);
+}
+
 function issueThreadPrompt(issue: any) {
   return `Use this ticket to add anything that may help staff investigate **${issue.public_id || `BUG-${issue.id}`}**.\n\nUseful details include:\n• what you were doing when it happened\n• where it happened\n• the exact error/message you saw\n• whether it happens every time\n• anything that temporarily worked around it\n\nSaucin AI will organize player-provided details for staff. Community workarounds are kept separate until staff verifies them.`;
 }
@@ -399,6 +434,92 @@ export async function postIssueStatusUpdate(issueId: number, fromStatus: string,
   return true;
 }
 
+export async function ensureSuggestionDiscordThread(suggestionId:number,originThreadId?:string|null){
+  const suggestion=await getSuggestion(suggestionId);
+  if(!suggestion||!discord.isReady()) return null;
+  if(suggestion.discord_thread_id) return String(suggestion.discord_thread_id);
+  const settings=await getSuggestionAutomationSettings();
+  if(!settings.auto_create_forum_posts||!settings.forum_channel_id) return null;
+
+  let thread:any=null;
+  let statusMessage:any=null;
+  if(originThreadId){
+    const origin=await discord.channels.fetch(originThreadId).catch(()=>null);
+    const parentId=origin&&'parentId' in origin?String((origin as any).parentId||''):'';
+    if(origin&&(origin as any).isThread?.()&&parentId===settings.forum_channel_id){
+      thread=origin;
+      statusMessage=await (thread as any).send({
+        content:await getSuggestionPublicMessage(suggestion),
+        components:suggestionButtons(suggestionId,thread.id),
+        allowedMentions:{parse:[]}
+      });
+    }
+  }
+
+  if(!thread){
+    const forum=await discord.channels.fetch(settings.forum_channel_id).catch(()=>null);
+    if(!forum) throw new Error('Configured Discord suggestions forum could not be found.');
+    if(forum.type!==ChannelType.GuildForum&&forum.type!==ChannelType.GuildMedia){
+      throw new Error('The configured suggestions destination must be a Discord Forum or Media channel.');
+    }
+    thread=await (forum as any).threads.create({
+      name:suggestionThreadName(suggestion),
+      message:{
+        content:await getSuggestionPublicMessage(suggestion),
+        components:suggestionButtons(suggestionId)
+      },
+      reason:`Saucin AI suggestion ${suggestion.public_id||suggestion.id}`
+    });
+    statusMessage=await thread.fetchStarterMessage().catch(()=>null);
+  }
+
+  if(!thread||!statusMessage) throw new Error('Discord created the suggestion discussion but its status message could not be found.');
+  await db.query(`
+    UPDATE suggestions
+       SET discord_thread_id=$1,discord_status_channel_id=$2,discord_status_message_id=$3,updated_at=NOW()
+     WHERE id=$4`,[String(thread.id),String(thread.id),String(statusMessage.id),suggestionId]);
+  await syncSuggestionDiscordPost(suggestionId).catch(()=>false);
+  return String(thread.id);
+}
+
+export async function syncSuggestionDiscordPost(suggestionId:number){
+  const suggestion=await getSuggestion(suggestionId);
+  if(!suggestion||!discord.isReady()||!suggestion.discord_status_channel_id||!suggestion.discord_status_message_id) return false;
+  const settings=await getSuggestionAutomationSettings();
+  const channel=await discord.channels.fetch(String(suggestion.discord_status_channel_id)).catch(()=>null);
+  if(!channel||!channel.isTextBased()||channel.isDMBased()) return false;
+  if(settings.edit_original_status_message){
+    const message=await channel.messages.fetch(String(suggestion.discord_status_message_id)).catch(()=>null);
+    if(message){
+      await message.edit({
+        content:await getSuggestionPublicMessage(suggestion),
+        components:suggestionButtons(suggestionId,suggestion.discord_thread_id||null),
+        allowedMentions:{parse:[]}
+      });
+    }
+  }
+  if((channel as any).isThread?.()&&typeof (channel as any).setName==='function'){
+    await (channel as any).setName(suggestionThreadName(suggestion),`Saucin AI synchronized ${suggestion.public_id||suggestion.id}`).catch(()=>null);
+  }
+  return true;
+}
+
+export async function postSuggestionStatusUpdate(suggestionId:number,fromStatus:string,toStatus:string){
+  const suggestion=await getSuggestion(suggestionId);
+  if(!suggestion?.discord_thread_id||!discord.isReady()) return false;
+  const settings=await getSuggestionAutomationSettings();
+  if(!settings.post_status_updates_to_thread) return false;
+  const channel=await discord.channels.fetch(String(suggestion.discord_thread_id)).catch(()=>null);
+  if(!channel||!channel.isTextBased()||channel.isDMBased()) return false;
+  await (channel as any).send({
+    content:`**Suggestion status updated:** ${fromStatus.replaceAll('_',' ')} → **${toStatus.replaceAll('_',' ')}**\n\n${await getSuggestionPublicMessage(suggestion)}`,
+    components:suggestionButtons(suggestionId,suggestion.discord_thread_id),
+    allowedMentions:{parse:[]}
+  });
+  await syncSuggestionDiscordPost(suggestionId).catch(()=>false);
+  return true;
+}
+
 
 async function postModerationAudit(detection: ModerationDetection, message: Message) {
   if (!detection.post_to_audit || !detection.audit_channel_id || !discord.isReady()) return;
@@ -417,7 +538,9 @@ async function postModerationAudit(detection: ModerationDetection, message: Mess
 }
 
 async function handleMessage(message: Message) {
-  if (!message.guildId || message.author.bot || !message.content.trim()) return;
+  if (!message.guildId || message.author.bot) return;
+  const evidenceText=messageEvidenceText(message);
+  if(!evidenceText) return;
   if (env.DISCORD_GUILD_ID && message.guildId !== env.DISCORD_GUILD_ID) return;
 
   // Issue ticket threads are managed independently from normal channel policies. They may remain
@@ -439,6 +562,23 @@ async function handleMessage(message: Message) {
       content: message.content
     }).catch(error => console.error('[issues] failed to process issue-ticket message', error));
     await syncIssueDiscordPost(linkedIssueId).catch(() => null);
+    return;
+  }
+
+  // Suggestion forum discussions remain linked even when their thread channel is
+  // ignored in normal channel policies. Replies and attachments enrich only the
+  // matching suggestion and never become verified promises.
+  const linkedSuggestionId=await getSuggestionIdForDiscordThread(message.channelId);
+  if(linkedSuggestionId){
+    const storedId=await storeMessage(message);
+    await processSuggestionThreadMessage({
+      suggestionId:linkedSuggestionId,
+      discordMessageDbId:storedId,
+      discordUserId:message.author.id,
+      authorName:message.author.username,
+      content:evidenceText
+    }).catch(error=>console.error('[suggestions] failed to process forum reply',error));
+    await syncSuggestionDiscordPost(linkedSuggestionId).catch(()=>false);
     return;
   }
 
@@ -556,24 +696,29 @@ async function handleMessage(message: Message) {
       channelId: message.channelId,
       discordMessageId: storedId
     });
-    const suggestion = recorded.suggestion;
+    let suggestion = recorded.suggestion;
     if (suggestion) {
+      const originThreadId=(message.channel as any).isThread?.()?message.channelId:null;
+      await ensureSuggestionDiscordThread(Number(suggestion.id),originThreadId)
+        .catch(error=>console.warn('[suggestions] unable to create Discord forum discussion',error));
+      suggestion=await getSuggestion(Number(suggestion.id))||suggestion;
+      await syncSuggestionDiscordPost(Number(suggestion.id)).catch(()=>false);
       matchedSources = [{
         type:'suggestion',id:suggestion.public_id||suggestion.id,title:suggestion.title,status:suggestion.status,
         supporters:Number(suggestion.unique_supporters||suggestion.mention_count||0),
-        match:recorded.match
+        match:recorded.match,discord_thread_id:suggestion.discord_thread_id||null
       }];
       if (suggestionReplyAllowed || mentionOverride) {
         const publicId=suggestion.public_id||`SUG-${String(suggestion.id).padStart(4,'0')}`;
         const status=String(suggestion.status||'candidate').replaceAll('_',' ');
         if (recorded.created) {
-          responseText=`I logged that as **${publicId} · ${suggestion.title}** for staff to review. If anyone else likes the idea, they can use the button below so support is counted without creating duplicate suggestions.`;
+          responseText=`I logged that as **${publicId} · ${suggestion.title}** and opened a dedicated discussion for details, links, and community feedback.`;
         } else if (recorded.supporterAdded) {
           responseText=`That matches **${publicId} · ${suggestion.title}**. I added your support to the existing suggestion. Current status: **${status}**.`;
         } else {
           responseText=`That matches **${publicId} · ${suggestion.title}**. You're already counted as supporting it. Current status: **${status}**.`;
         }
-        responseComponents=suggestionButtons(Number(suggestion.id));
+        responseComponents=suggestionButtons(Number(suggestion.id),suggestion.discord_thread_id||null);
       }
     }
   }
@@ -707,6 +852,7 @@ export async function startDiscord() {
         const suggestion=await getSuggestion(id);
         if(!suggestion) return interaction.reply({content:'That suggestion is no longer available.',ephemeral:true});
         const added=await addSuggestionSupport(id,interaction.user.id,{text:'Supported via Discord suggestion button.',source:'discord_button'});
+        await syncSuggestionDiscordPost(id).catch(()=>false);
         return interaction.reply({
           content:added
             ? `Your support was added to **${suggestion.public_id||`SUG-${id}`} · ${suggestion.title}**.`
