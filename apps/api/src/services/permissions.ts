@@ -26,7 +26,9 @@ export const permissionCatalog: PermissionGroup[] = [
   ]},
   { key: 'suggestions', label: 'Suggestions', permissions: [
     { key: 'suggestions.view', label: 'View suggestions', description: 'View clustered community suggestions, support counts, source messages, and status.' },
-    { key: 'suggestions.manage', label: 'Manage suggestions', description: 'Create, edit, triage, annotate, and change the status of community suggestions.' }
+    { key: 'suggestions.manage', label: 'Manage suggestions', description: 'Create, edit, triage, annotate, and change the status of community suggestions.' },
+    { key: 'suggestions.ai', label: 'Use Suggestions AI', description: 'Create or expand suggestion drafts with AI while preserving the original community submission.' },
+    { key: 'suggestions.forum', label: 'Manage suggestion discussions', description: 'Create and synchronize linked Discord forum discussions.' }
   ]},
   { key: 'moderation', label: 'Moderation', permissions: [
     { key: 'moderation.view', label: 'View moderation', description: 'View moderation detections, cases, player feedback, and history.' },
@@ -54,6 +56,7 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'settings.bot.manage', label: 'Manage Bot & AI', description: 'Change direct mention and bot behavior settings.' },
     { key: 'settings.knowledge.manage', label: 'Manage knowledge settings', description: 'Manage content types, categories, audiences, and role mappings.' },
     { key: 'settings.issues.manage', label: 'Manage issue settings', description: 'Manage issue categories, ticket automation, and public response templates.' },
+    { key: 'settings.suggestions.manage', label: 'Manage suggestion settings', description: 'Configure the Discord suggestions forum, discussion capture, and status synchronization.' },
     { key: 'settings.permissions.manage', label: 'Manage permissions', description: 'Change which Discord roles can access dashboard modules and actions.' }
   ]},
   { key: 'planned', label: 'Planned modules', permissions: [
@@ -76,8 +79,10 @@ const implications: Record<string, string[]> = {
   'knowledge.gaps.manage': ['knowledge.gaps.view'],
   'channels.manage': ['channels.view'],
   'settings.bot.manage': ['settings.view'], 'settings.knowledge.manage': ['settings.view','knowledge.view'], 'settings.issues.manage': ['settings.view','issues.view'],
+  'settings.suggestions.manage': ['settings.view','suggestions.view'],
   'settings.permissions.manage': ['settings.view'],
-  'suggestions.manage': ['suggestions.view'],
+  'suggestions.manage': ['suggestions.view','suggestions.ai','suggestions.forum'],
+  'suggestions.ai': ['suggestions.view'], 'suggestions.forum': ['suggestions.view'],
   'moderation.review': ['moderation.view'], 'moderation.actions': ['moderation.view'], 'moderation.configure': ['moderation.view','settings.view'],
   'announcements.manage': ['announcements.view'], 'txadmin.manage': ['txadmin.view','settings.view']
 };
