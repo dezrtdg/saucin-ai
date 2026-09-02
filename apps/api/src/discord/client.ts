@@ -47,6 +47,13 @@ export type DiscordChannelMetadata = {
   is_thread: boolean;
 };
 
+export type DiscordForumTagMetadata = {
+  id: string;
+  name: string;
+  emoji: string | null;
+  moderated: boolean;
+};
+
 function modeAllows(policyMode: string, intent: string) {
   if (policyMode === 'full') return true;
   if (policyMode === 'questions') return intent === 'question';
@@ -179,6 +186,19 @@ export function getCachedDiscordChannelMetadata(channelId: string): DiscordChann
   const channel = guild.channels.cache.get(channelId);
   if (!channel || !isConfigurableChannel(channel)) return null;
   return toChannelMetadata(channel);
+}
+
+export function getCachedDiscordForumTags(channelId: string): DiscordForumTagMetadata[] {
+  if (!env.DISCORD_GUILD_ID || !discord.isReady()) return [];
+  const guild = discord.guilds.cache.get(env.DISCORD_GUILD_ID);
+  const channel = guild?.channels.cache.get(channelId) as any;
+  if (!channel || (channel.type !== ChannelType.GuildForum && channel.type !== ChannelType.GuildMedia)) return [];
+  return (Array.isArray(channel.availableTags) ? channel.availableTags : []).map((tag:any) => ({
+    id:String(tag.id),
+    name:String(tag.name),
+    emoji:tag.emoji?.name ? String(tag.emoji.name) : tag.emoji?.id ? String(tag.emoji.id) : null,
+    moderated:Boolean(tag.moderated)
+  }));
 }
 
 export async function syncDiscordChannels() {
@@ -489,8 +509,18 @@ export async function ensureSuggestionDiscordThread(suggestionId:number,originTh
     if(forum.type!==ChannelType.GuildForum&&forum.type!==ChannelType.GuildMedia){
       throw new Error('The configured suggestions destination must be a Discord Forum or Media channel.');
     }
+    const availableTagIds=(Array.isArray((forum as any).availableTags)?(forum as any).availableTags:[])
+      .map((tag:any)=>String(tag.id));
+    const configuredTag=settings.forum_tag_id&&availableTagIds.includes(settings.forum_tag_id)
+      ? settings.forum_tag_id
+      : null;
+    const appliedTag=configuredTag||availableTagIds[0]||null;
+    if((forum as any).flags?.has?.('RequireTag')&&!appliedTag){
+      throw new Error('Discord requires a tag for this forum, but the channel has no available tags.');
+    }
     thread=await (forum as any).threads.create({
       name:suggestionThreadName(suggestion),
+      appliedTags:appliedTag?[appliedTag]:[],
       message:{
         content:await getSuggestionPublicMessage(suggestion),
         components:suggestionButtons(suggestionId)
