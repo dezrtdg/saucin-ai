@@ -31,11 +31,16 @@ ALTER TABLE moderation_cases
 ALTER TABLE moderation_case_events
   DROP CONSTRAINT IF EXISTS moderation_case_events_event_type_check;
 
+-- Migrations are intentionally re-run on every API startup. Keep this earlier
+-- constraint compatible with event types added by later migrations so an existing
+-- player-feedback row cannot prevent the API from restarting before migration 005
+-- gets a chance to recreate the same superset constraint.
 ALTER TABLE moderation_case_events
   ADD CONSTRAINT moderation_case_events_event_type_check
   CHECK (event_type IN (
     'detected','confirmed','dismissed','reopened','note',
-    'live_action_completed','live_action_partial','live_action_failed','live_action_skipped'
+    'live_action_completed','live_action_partial','live_action_failed','live_action_skipped',
+    'player_acknowledged','player_contested','feedback_reanalyzed'
   ));
 
 CREATE INDEX IF NOT EXISTS idx_moderation_cases_live_action
