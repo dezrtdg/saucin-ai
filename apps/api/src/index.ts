@@ -7,7 +7,7 @@ import { healthRoutes } from './routes/health.js';
 import { adminRoutes } from './routes/admin.js';
 import { liveModerationRoutes } from './routes/liveModeration.js';
 import { suggestionRoutes } from './routes/suggestions.js';
-import { backfillKnowledgeEmbeddings } from './services/knowledge.js';
+import { backfillKnowledgeEmbeddings, consolidateOpenKnowledgeGaps } from './services/knowledge.js';
 import { backfillIssueEmbeddings } from './services/issues.js';
 import { backfillSuggestionEmbeddings } from './services/suggestions.js';
 import { startLiveModerationWorker, stopLiveModerationWorker } from './services/liveModeration.js';
@@ -15,6 +15,8 @@ import { startModerationNoticeEnricher } from './services/moderationNoticeEnrich
 
 const app = Fastify({ logger: true });
 await runMigrations();
+const consolidatedGaps = await consolidateOpenKnowledgeGaps();
+if (consolidatedGaps) app.log.info({ consolidatedGaps }, 'Consolidated duplicate open knowledge gaps');
 await redis.connect();
 
 await app.register(healthRoutes);
@@ -22,7 +24,7 @@ await app.register(adminRoutes);
 await app.register(liveModerationRoutes);
 await app.register(suggestionRoutes);
 
-app.get('/', async () => ({ service: 'Saucin AI API', version: '1.6.6' }));
+app.get('/', async () => ({ service: 'Saucin AI API', version: '1.6.8' }));
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
 startModerationNoticeEnricher();

@@ -11,6 +11,7 @@ import {
   GuildTextBasedChannel,
   Message,
   ModalBuilder,
+  Partials,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
   TextInputBuilder,
@@ -71,7 +72,8 @@ import {
 } from '../services/tickets.js';
 
 export const discord = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  partials: [Partials.Message, Partials.Channel]
 });
 
 export type DiscordChannelMetadata = {
@@ -166,7 +168,37 @@ function trimContext(value: string, max = 1200) {
 }
 
 function isDirectMention(message: Message) {
-  return Boolean(discord.user && message.mentions.users.has(discord.user.id));
+  if (!discord.user) return false;
+  if (message.mentions.users.has(discord.user.id)) return true;
+
+  // Discord can resolve @Saucin AI to the bot's managed/named role instead of
+  // the application user. Treat only a role belonging specifically to this bot
+  // as a direct address; shared staff roles must not wake the assistant.
+  const botMember = message.guild?.members.me;
+  if (!botMember) return false;
+  const botNames = new Set([
+    discord.user.username,
+    botMember.displayName
+  ].map(value => value.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  return message.mentions.roles.some(role =>
+    botMember.roles.cache.has(role.id) && (
+      role.managed || botNames.has(role.name.toLowerCase().replace(/[^a-z0-9]/g, ''))
+    )
+  );
+}
+
+function contentMentionsBot(content: string) {
+  if (!discord.user) return false;
+  if (new RegExp(`<@!?${discord.user.id}>`).test(content)) return true;
+  const botMember = discord.guilds.cache.get(env.DISCORD_GUILD_ID || '')?.members.me;
+  if (!botMember) return false;
+  return [...content.matchAll(/<@&(\d+)>/g)].some(match => {
+    const role = botMember.guild.roles.cache.get(match[1]);
+    if (!role || !botMember.roles.cache.has(role.id)) return false;
+    const botNames = [discord.user!.username, botMember.displayName]
+      .map(value => value.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    return role.managed || botNames.includes(role.name.toLowerCase().replace(/[^a-z0-9]/g, ''));
+  });
 }
 
 function removeBotMention(content: string) {
@@ -460,7 +492,11 @@ async function storeMessage(message: Message, context?: ExplicitContext) {
     `INSERT INTO discord_messages
       (guild_id, channel_id, channel_name, message_id, author_id, author_name, content, is_bot, discord_created_at, raw)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-     ON CONFLICT (message_id) DO UPDATE SET content = EXCLUDED.content, channel_name = EXCLUDED.channel_name
+     ON CONFLICT (message_id) DO UPDATE SET
+       content = EXCLUDED.content,
+       channel_name = EXCLUDED.channel_name,
+       author_name = EXCLUDED.author_name,
+       raw = EXCLUDED.raw
      RETURNING id`,
     [
       message.guildId,
@@ -1286,7 +1322,7 @@ async function postModerationAudit(detection: ModerationDetection, message: Mess
   }
 }
 
-async function handleMessage(message: Message) {
+async function handleMessage(message: Message, options: { directMentionEdit?: boolean } = {}) {
   if (!message.guildId || message.author.bot) return;
   const evidenceText=messageEvidenceText(message);
   if(!evidenceText) return;
@@ -1297,6 +1333,7 @@ async function handleMessage(message: Message) {
   // classification from treating sensitive ticket content as public channel data.
   const linkedTicket=await getTicketByChannel(message.channelId);
   if(linkedTicket){
+    if(options.directMentionEdit) return;
     await captureTicketMessage(message,linkedTicket).catch(error=>console.error('[tickets] failed to capture ticket message',error));
     const resumed=await resumeTicketAfterUserReply(
       Number(linkedTicket.id),message.author.id,message.author.globalName||message.author.username,message.id
@@ -1320,6 +1357,7 @@ async function handleMessage(message: Message) {
   // Ignored on the Channels page while still collecting player-provided evidence for the linked bug.
   const linkedIssueId = await getIssueIdForDiscordThread(message.channelId);
   if (linkedIssueId) {
+    if(options.directMentionEdit) return;
     void recordModerationIngressDiagnostic({
       resultCode:'skipped_issue_thread',guildId:message.guildId,channelId:message.channelId,
       channelName:getChannelName(message.channel)||null,discordMessageId:message.id,discordUserId:message.author.id,
@@ -1343,6 +1381,7 @@ async function handleMessage(message: Message) {
   // matching suggestion and never become verified promises.
   const linkedSuggestionId=await getSuggestionIdForDiscordThread(message.channelId);
   if(linkedSuggestionId){
+    if(options.directMentionEdit) return;
     const storedId=await storeMessage(message);
     await processSuggestionThreadMessage({
       suggestionId:linkedSuggestionId,
@@ -1362,6 +1401,7 @@ async function handleMessage(message: Message) {
   const suggestionSettings=await getSuggestionAutomationSettings().catch(()=>null);
   const parentId=(message.channel as any).isThread?.()?String((message.channel as any).parentId||''):'';
   if(suggestionSettings?.forum_channel_id&&parentId===suggestionSettings.forum_channel_id){
+    if(options.directMentionEdit) return;
     const storedId=await storeMessage(message);
     const recorded=await recordSuggestion({
       text:evidenceText,
@@ -1420,7 +1460,7 @@ async function handleMessage(message: Message) {
 
   const storedId = await storeMessage(message, explicitContext);
   // Moderation runs independently of support replies and may enforce according to the current live-mode configuration.
-  if (policy.monitor_messages) {
+  if (policy.monitor_messages && !options.directMentionEdit) {
     const memberRoleIds = message.member ? [...message.member.roles.cache.keys()] : [];
     void processModerationMessage({
       storedMessageId: storedId,
@@ -1442,7 +1482,9 @@ async function handleMessage(message: Message) {
     });
   }
   const classification = await classifyMessage(classificationInput);
-  const effectiveIntent = directMention && botSettings.direct_mentions_enabled && !['issue', 'suggestion'].includes(classification.intent)
+  const effectiveIntent = options.directMentionEdit
+    ? 'question'
+    : directMention && botSettings.direct_mentions_enabled && !['issue', 'suggestion'].includes(classification.intent)
     ? 'question'
     : classification.intent;
 
@@ -1531,7 +1573,7 @@ async function handleMessage(message: Message) {
   const normalQuestionDetectionAllowed = policy.detect_questions && modeAllows(policy.mode, 'question');
   const normalQuestionReplyAllowed = normalQuestionDetectionAllowed && policy.auto_reply;
   const explicitQuestionReplyAllowed = directMention && botSettings.direct_mentions_enabled && (
-    botSettings.direct_mentions_bypass_channel_mode || normalQuestionReplyAllowed
+    botSettings.direct_mentions_bypass_channel_mode || normalQuestionDetectionAllowed
   );
   const organicQuestionEligible = !directMention && classification.shouldRespond && classification.confidence >= 0.5;
 
@@ -1625,6 +1667,21 @@ export async function startDiscord() {
   });
   discord.on(Events.MessageCreate, (message) => {
     handleMessage(message).catch((error) => console.error('[discord] message handler failed', error));
+  });
+  discord.on(Events.MessageUpdate, (_oldMessage, updatedMessage) => {
+    void (async () => {
+      const message = updatedMessage.partial ? await updatedMessage.fetch() : updatedMessage;
+      if (!message.guildId || message.author.bot || !isDirectMention(message)) return;
+
+      const previous = await db.query(
+        'SELECT content FROM discord_messages WHERE message_id=$1 LIMIT 1',
+        [message.id]
+      );
+      const previousContent = String(previous.rows[0]?.content || _oldMessage.content || '');
+      if (contentMentionsBot(previousContent)) return;
+
+      await handleMessage(message, { directMentionEdit: true });
+    })().catch((error) => console.error('[discord] edited mention handler failed', error));
   });
   discord.on(Events.InteractionCreate, (interaction) => {
     if(interaction.isStringSelectMenu()&&interaction.customId==='ticket:create'){

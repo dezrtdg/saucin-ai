@@ -337,6 +337,110 @@ function normalizeGapQuestion(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
+const gapStopWords = new Set([
+  'a','an','and','are','as','at','be','been','but','by','can','could','did','do','does','for','from','had','has','have',
+  'how','i','if','in','is','it','me','my','of','on','or','so','that','the','their','them','then','there','they','this',
+  'to','was','we','were','what','when','where','which','who','why','will','with','would','you','your',
+  'server','saucin','roleplay','rp','player','players','verified','correct','specific','method','thing','things'
+]);
+
+function gapTokens(value: string) {
+  return new Set(normalizeGapQuestion(value)
+    .replace(/\bduffle\b/g, 'duffel')
+    .split(' ')
+    .map(token => token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token)
+    .filter(token => token.length > 2 && !gapStopWords.has(token)));
+}
+
+function gapConceptScore(left: string, right: string) {
+  const a = gapTokens(left);
+  const b = gapTokens(right);
+  if (!a.size || !b.size) return 0;
+  const shared = [...a].filter(token => b.has(token)).length;
+  if (shared < 2) return 0;
+  return shared / Math.min(a.size, b.size);
+}
+
+function uniqueGapExamples(rows: any[]) {
+  return unique(rows.flatMap(row => [row.sample_question, ...(row.example_questions || [])]), 20);
+}
+
+export async function consolidateOpenKnowledgeGaps(): Promise<number> {
+  const result = await db.query(`
+    SELECT id,normalized_question,display_question,sample_question,example_questions,topic,occurrences,
+           first_seen,last_seen,matched_sources,conversation_context,partial_answer,discord_message_id
+     FROM knowledge_gaps
+     WHERE status='open' AND converted_article_id IS NULL AND btrim(notes)=''
+     ORDER BY first_seen,id
+     LIMIT 1000`);
+  const rows = result.rows;
+  const parent = rows.map((_: unknown, index: number) => index);
+  const find = (index: number): number => parent[index] === index ? index : (parent[index] = find(parent[index]));
+  const join = (left: number, right: number) => {
+    const a = find(left); const b = find(right);
+    if (a !== b) parent[b] = a;
+  };
+
+  for (let left = 0; left < rows.length; left++) {
+    for (let right = left + 1; right < rows.length; right++) {
+      const score = gapConceptScore(
+        rows[left].display_question || rows[left].normalized_question,
+        rows[right].display_question || rows[right].normalized_question
+      );
+      if (score >= 0.66) join(left, right);
+    }
+  }
+
+  const groups = new Map<number, any[]>();
+  rows.forEach((row: any, index: number) => {
+    const root = find(index);
+    groups.set(root, [...(groups.get(root) || []), row]);
+  });
+
+  let removed = 0;
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const ordered = [...group].sort((a, b) => Number(b.occurrences) - Number(a.occurrences) || Number(a.id) - Number(b.id));
+    const primary = ordered[0];
+    const latest = [...group].sort((a, b) => new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime())[0];
+    const duplicateIds = group.filter(row => row.id !== primary.id).map(row => row.id);
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        UPDATE knowledge_gaps SET
+          occurrences=$1,
+          first_seen=$2,
+          last_seen=$3,
+          example_questions=$4,
+          matched_sources=$5,
+          conversation_context=COALESCE($6,conversation_context),
+          partial_answer=COALESCE($7,partial_answer),
+          discord_message_id=COALESCE($8,discord_message_id)
+        WHERE id=$9`, [
+          group.reduce((sum, row) => sum + Number(row.occurrences || 0), 0),
+          new Date(Math.min(...group.map(row => new Date(row.first_seen).getTime()))),
+          new Date(Math.max(...group.map(row => new Date(row.last_seen).getTime()))),
+          uniqueGapExamples(group),
+          JSON.stringify(latest.matched_sources || []),
+          latest.conversation_context || null,
+          latest.partial_answer || null,
+          latest.discord_message_id || null,
+          primary.id
+        ]);
+      await client.query('DELETE FROM knowledge_gaps WHERE id = ANY($1::bigint[])', [duplicateIds]);
+      await client.query('COMMIT');
+      removed += duplicateIds.length;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  return removed;
+}
+
 export async function recordKnowledgeGap(input: {
   question: string;
   normalizedQuestion?: string;
@@ -355,17 +459,23 @@ export async function recordKnowledgeGap(input: {
   const topic = String(input.topic || '').trim().slice(0, 160) || null;
   const conversationContext = String(input.conversationContext || '').trim().slice(0, 12000) || null;
   const partialAnswer = String(input.partialAnswer || '').trim().slice(0, 6000) || null;
-  const similar = await db.query(
-    `SELECT id FROM knowledge_gaps
+  const candidates = await db.query(
+    `SELECT id,normalized_question,display_question,topic,
+            similarity(normalized_question,$1) AS trigram_score
+       FROM knowledge_gaps
       WHERE status IN ('open','reviewed')
-        AND (
-          similarity(normalized_question,$1) >= 0.56
-          OR ($2::text IS NOT NULL AND topic=$2 AND similarity(normalized_question,$1) >= 0.34)
-        )
-      ORDER BY similarity(normalized_question,$1) DESC,last_seen DESC LIMIT 1`,
-    [normalized || input.question, topic]
+      ORDER BY last_seen DESC LIMIT 1000`,
+    [normalized || input.question]
   );
-  if (similar.rowCount) {
+  const similar = candidates.rows
+    .map(row => ({
+      ...row,
+      conceptScore: gapConceptScore(displayQuestion || normalized, row.display_question || row.normalized_question)
+    }))
+    .filter(row => Number(row.trigram_score) >= 0.56 ||
+      (topic && row.topic === topic && Number(row.trigram_score) >= 0.34) || row.conceptScore >= 0.66)
+    .sort((a, b) => Math.max(Number(b.trigram_score), b.conceptScore) - Math.max(Number(a.trigram_score), a.conceptScore))[0];
+  if (similar) {
     await db.query(
       `UPDATE knowledge_gaps SET occurrences=occurrences+1,last_seen=NOW(),display_question=$2,
               matched_sources=$3,discord_user_id=COALESCE($4,discord_user_id),channel_id=COALESCE($5,channel_id),
@@ -391,7 +501,7 @@ export async function recordKnowledgeGap(input: {
         input.discordMessageId || null,
         conversationContext,
         partialAnswer,
-        similar.rows[0].id
+        similar.id
       ]
     );
     return;
