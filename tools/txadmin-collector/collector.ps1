@@ -29,7 +29,8 @@ function Read-JsonFile {
 function Write-JsonFile {
     param([string]$Path, $Value)
     $temporary = "$Path.tmp"
-    $Value | ConvertTo-Json -Depth 10 -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
+    $json = ConvertTo-Json -InputObject $Value -Depth 10 -Compress
+    Set-Content -LiteralPath $temporary -Value $json -Encoding UTF8
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
