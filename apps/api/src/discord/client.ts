@@ -1528,12 +1528,16 @@ async function handleMessage(message: Message) {
     }
   }
 
-  const normalQuestionReplyAllowed = policy.detect_questions && policy.auto_reply && modeAllows(policy.mode, 'question');
+  const normalQuestionDetectionAllowed = policy.detect_questions && modeAllows(policy.mode, 'question');
+  const normalQuestionReplyAllowed = normalQuestionDetectionAllowed && policy.auto_reply;
   const explicitQuestionReplyAllowed = directMention && botSettings.direct_mentions_enabled && (
     botSettings.direct_mentions_bypass_channel_mode || normalQuestionReplyAllowed
   );
+  const organicQuestionEligible = !directMention && classification.shouldRespond && classification.confidence >= 0.5;
 
-  if (!responseText && effectiveIntent === 'question' && (normalQuestionReplyAllowed || explicitQuestionReplyAllowed)) {
+  if (!responseText && effectiveIntent === 'question' && (
+    explicitQuestionReplyAllowed || (normalQuestionDetectionAllowed && organicQuestionEligible)
+  )) {
     const roleIds = message.member ? [...message.member.roles.cache.keys()] : [];
     const allowedAudiences = await getAllowedKnowledgeAudiences(roleIds);
     const hits = await searchKnowledge({
@@ -1554,9 +1558,15 @@ async function handleMessage(message: Message) {
     }));
 
     const groundedReply = await generateGroundedReply(explicitContext?.answerInput ?? message.content, hits);
-    responseText = groundedReply?.text ?? null;
+    const needsGap = !groundedReply || groundedReply.coverage === 'partial';
 
-    if (!responseText || groundedReply?.coverage === 'partial') {
+    // Organic questions only speak when the verified knowledge base fully answers them.
+    // Direct bot questions may return a partial answer or an honest no-answer notice.
+    if (directMention) responseText = groundedReply?.text ?? null;
+    else if (normalQuestionReplyAllowed && groundedReply?.coverage === 'full') responseText = groundedReply.text;
+    else responseText = null;
+
+    if (needsGap) {
       const gapQuestion = await deriveKnowledgeGapQuestion({
         currentRequest: removeBotMention(message.content) || message.content,
         conversationContext: explicitContext?.aiInput ?? classificationInput,
@@ -1578,7 +1588,7 @@ async function handleMessage(message: Message) {
         matchedSources
       }).catch(error => console.error('[knowledge] failed to record gap', error));
     }
-    if (!responseText) responseText = knowledgeGapReply(hits);
+    if (directMention && !responseText) responseText = knowledgeGapReply(hits);
   }
 
   await db.query(
@@ -1589,7 +1599,7 @@ async function handleMessage(message: Message) {
       storedId,
       effectiveIntent,
       classification.confidence,
-      Boolean(responseText) || explicitQuestionReplyAllowed,
+      Boolean(responseText),
       directMention ? `Direct bot mention. ${classification.rationale}` : classification.rationale,
       JSON.stringify(matchedSources),
       responseText,

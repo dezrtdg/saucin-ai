@@ -351,6 +351,7 @@ export async function recordKnowledgeGap(input: {
 }) {
   const displayQuestion = cleanDisplayQuestion(input.displayQuestion || input.normalizedQuestion || input.question) || cleanDisplayQuestion(input.question);
   const normalized = normalizeGapQuestion(displayQuestion || input.normalizedQuestion || input.question);
+  const exampleQuestion = cleanDisplayQuestion(input.question).slice(0, 500);
   const topic = String(input.topic || '').trim().slice(0, 160) || null;
   const conversationContext = String(input.conversationContext || '').trim().slice(0, 12000) || null;
   const partialAnswer = String(input.partialAnswer || '').trim().slice(0, 6000) || null;
@@ -366,14 +367,23 @@ export async function recordKnowledgeGap(input: {
   );
   if (similar.rowCount) {
     await db.query(
-      `UPDATE knowledge_gaps SET occurrences=occurrences+1,last_seen=NOW(),sample_question=$1,display_question=$2,
+      `UPDATE knowledge_gaps SET occurrences=occurrences+1,last_seen=NOW(),display_question=$2,
               matched_sources=$3,discord_user_id=COALESCE($4,discord_user_id),channel_id=COALESCE($5,channel_id),
               discord_message_id=COALESCE($6,discord_message_id),
               conversation_context=COALESCE($7,conversation_context),
-              partial_answer=COALESCE($8,partial_answer)
+              partial_answer=COALESCE($8,partial_answer),
+              example_questions=(
+                SELECT ARRAY(
+                  SELECT candidate FROM (
+                    SELECT DISTINCT unnest(knowledge_gaps.example_questions || ARRAY[$1]::text[]) AS candidate
+                  ) examples
+                  WHERE btrim(candidate) <> ''
+                  LIMIT 20
+                )
+              )
         WHERE id=$9`,
       [
-        input.question,
+        exampleQuestion,
         displayQuestion,
         JSON.stringify(input.matchedSources || []),
         input.discordUserId || null,
@@ -391,17 +401,25 @@ export async function recordKnowledgeGap(input: {
   await db.query(
     `INSERT INTO knowledge_gaps
        (fingerprint,normalized_question,display_question,sample_question,topic,discord_user_id,channel_id,discord_message_id,
-        conversation_context,partial_answer,matched_sources)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        conversation_context,partial_answer,matched_sources,example_questions)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT (fingerprint) DO UPDATE SET
        occurrences = knowledge_gaps.occurrences + 1,
        last_seen = NOW(),
        display_question = EXCLUDED.display_question,
-       sample_question = EXCLUDED.sample_question,
        discord_message_id = COALESCE(EXCLUDED.discord_message_id, knowledge_gaps.discord_message_id),
        conversation_context = COALESCE(EXCLUDED.conversation_context, knowledge_gaps.conversation_context),
        partial_answer = COALESCE(EXCLUDED.partial_answer, knowledge_gaps.partial_answer),
-       matched_sources = EXCLUDED.matched_sources`,
+       matched_sources = EXCLUDED.matched_sources,
+       example_questions = (
+         SELECT ARRAY(
+           SELECT candidate FROM (
+             SELECT DISTINCT unnest(knowledge_gaps.example_questions || EXCLUDED.example_questions) AS candidate
+           ) examples
+           WHERE btrim(candidate) <> ''
+           LIMIT 20
+         )
+       )`,
     [
       fingerprint,
       normalized || input.question,
@@ -413,7 +431,8 @@ export async function recordKnowledgeGap(input: {
       input.discordMessageId || null,
       conversationContext,
       partialAnswer,
-      JSON.stringify(input.matchedSources || [])
+      JSON.stringify(input.matchedSources || []),
+      [exampleQuestion]
     ]
   );
 }

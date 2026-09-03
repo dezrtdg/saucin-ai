@@ -972,7 +972,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
     admin.get('/api/knowledge/gaps', async () => {
       const result = await db.query(`
-        SELECT id,normalized_question,display_question,sample_question,topic,occurrences,status,matched_sources,first_seen,last_seen,notes,converted_article_id,
+        SELECT id,normalized_question,display_question,sample_question,example_questions,topic,occurrences,status,matched_sources,first_seen,last_seen,notes,converted_article_id,
                conversation_context,partial_answer,discord_message_id
         FROM knowledge_gaps
         ORDER BY CASE status WHEN 'open' THEN 1 WHEN 'reviewed' THEN 2 ELSE 3 END, occurrences DESC, last_seen DESC

@@ -38,9 +38,13 @@ function unique(values: string[], max = 20) {
 
 function fallback(content: string): Classification {
   const text = content.toLowerCase();
+  const trimmed = text.trim();
+  const conversationalReply = /^(have you tried|did you try|try\b|maybe\s+(?:try|check|look|go)\b|check\s+(?:at|the)\b|you\s+(?:could|can|should)\s+(?:try|check|look|go|ask|restart)\b|probably\b|might be\b)/i.test(trimmed);
+  const directedAtPlayer = /^<@!?\d+>\s*/.test(content.trim());
   const issue = /(anyone else|issue|bug|broken|not working|doesn['’]?t work|won['’]?t work|error|crash|crashing|stuck|can['’]?t|unable)/i.test(text);
   const suggestion = /(suggest|suggestion|idea|would be cool|should add|could (you|we) add|wish (we|you)|it would be nice)/i.test(text);
-  const question = /\?$/.test(text.trim()) || /^(how|what|where|when|why|who|can|could|is|are|do|does|did|will|would)\b/i.test(text.trim());
+  const question = /\?$/.test(trimmed) || /^(how|what|where|when|why|who|can|could|is|are|do|does|did|will|would)\b/i.test(trimmed);
+  const informationQuestion = /^(how|what|where|when|why|who)\b/i.test(trimmed);
 
   const rawTerms = text
     .replace(/[^a-z0-9/_-]+/g, ' ')
@@ -51,8 +55,10 @@ function fallback(content: string): Classification {
     if (entry.pattern.test(content)) expanded.push(...entry.terms);
   }
 
-  const base = issue
-    ? { intent: 'issue' as const, confidence: 0.72, shouldRespond: true, topic: 'possible issue', rationale: 'Rule-based issue pattern.' }
+  const base = conversationalReply || directedAtPlayer
+    ? { intent: 'casual' as const, confidence: 0.82, shouldRespond: false, topic: 'player conversation', rationale: 'Player-to-player reply, suggestion, or troubleshooting.' }
+    : issue && !informationQuestion
+      ? { intent: 'issue' as const, confidence: 0.72, shouldRespond: true, topic: 'possible issue', rationale: 'Rule-based issue pattern.' }
     : suggestion
       ? { intent: 'suggestion' as const, confidence: 0.70, shouldRespond: false, topic: 'possible suggestion', rationale: 'Rule-based suggestion pattern.' }
       : question
@@ -74,7 +80,15 @@ export async function classifyMessage(content: string): Promise<Classification> 
     const response = await client.responses.create({
       model: env.AI_CLASSIFIER_MODEL,
       reasoning: { effort: 'low' },
-      instructions: `Classify a FiveM roleplay Discord message and also create a retrieval plan. Return ONLY compact JSON with keys intent, confidence, shouldRespond, topic, rationale, normalizedQuestion, searchTerms, relatedTopics. intent must be one of: question, issue, suggestion, casual, staff_request, unknown. The input may contain labeled CURRENT REQUEST, REPLIED-TO MESSAGE, MOST RECENT MESSAGE, and EARLIER CONTEXT sections. Always treat CURRENT REQUEST as the user's actual request. If CURRENT REQUEST contains a vague reference such as "this", "that", "are they right", "clarify that", or "verify this", resolve it from REPLIED-TO MESSAGE first, otherwise MOST RECENT MESSAGE, and use EARLIER CONTEXT only when needed. Do not let unrelated older messages override the current request's intent. normalizedQuestion MUST be one concise resolved question or request, maximum 220 characters, with no Discord mentions, usernames, transcript labels, or copied conversation dump. Detect indirect questions, casual issue reports such as "anyone else having this problem?", and casual suggestions even when explicit keywords are absent. For questions, infer what the player is actually trying to do, not only the words they used. Expand implied concepts and common roleplay/server terminology. Example: "can i collect my inventory when i die" should include concepts such as death, respawn, NLR/new life rule, returning to scene, inventory recovery, dropped items, belongings. searchTerms should contain 4-15 concise retrieval terms/phrases and relatedTopics should contain 1-8 broader concepts. Do not invent a server rule or answer; only expand retrieval meaning. confidence must be 0 to 1.`,
+      instructions: `Classify a FiveM roleplay Discord message and also create a retrieval plan. Return ONLY compact JSON with keys intent, confidence, shouldRespond, topic, rationale, normalizedQuestion, searchTerms, relatedTopics. intent must be one of: question, issue, suggestion, casual, staff_request, unknown. The input may contain labeled CURRENT REQUEST, REPLIED-TO MESSAGE, MOST RECENT MESSAGE, and EARLIER CONTEXT sections. Always treat CURRENT REQUEST as the user's actual request. If CURRENT REQUEST contains a vague reference such as "this", "that", "are they right", "clarify that", or "verify this", resolve it from REPLIED-TO MESSAGE first, otherwise MOST RECENT MESSAGE, and use EARLIER CONTEXT only when needed. Do not let unrelated older messages override the current request's intent. normalizedQuestion MUST be one concise resolved question or request, maximum 220 characters, with no Discord mentions, usernames, transcript labels, or copied conversation dump.
+
+RESPONSE GATE:
+- Set shouldRespond=true for a standalone factual server/community question intended for general help, a clear issue report, a clear suggestion submission, or a request directed to the bot.
+- Classify player-to-player answers, speculative suggestions, and troubleshooting such as "have you tried at Lester's?", "maybe check the shop", or "try restarting" as casual with shouldRespond=false.
+- Also use casual/false for conversational follow-ups, questions aimed at a named or mentioned player, and messages inside an active player conversation unless the bot is directly addressed or the message independently and clearly reports an issue or suggestion.
+- Do not classify an information question as an issue merely because it says an item "doesn't do anything". If the main request asks where or how to obtain/use something, keep it a question unless the player clearly reports expected functionality failing.
+
+Detect indirect questions, casual issue reports such as "anyone else having this problem?", and casual suggestions even when explicit keywords are absent. For questions, infer what the player is actually trying to do, not only the words they used. Expand implied concepts and common roleplay/server terminology. Example: "can i collect my inventory when i die" should include concepts such as death, respawn, NLR/new life rule, returning to scene, inventory recovery, dropped items, belongings. searchTerms should contain 4-15 concise retrieval terms/phrases and relatedTopics should contain 1-8 broader concepts. Do not invent a server rule or answer; only expand retrieval meaning. confidence must be 0 to 1.`,
       input: content,
       max_output_tokens: 320
     });

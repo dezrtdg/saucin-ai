@@ -3,7 +3,7 @@ import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
 import { convertKnowledgeGapAction, reanalyzeKnowledgeGapAction, updateKnowledgeGapAction } from './actions';
 
-type Gap = { id:string; normalized_question:string; display_question:string|null; sample_question:string; topic:string|null; occurrences:number; status:string; matched_sources:any[]; first_seen:string; last_seen:string; notes:string; converted_article_id:string|null; conversation_context:string|null; partial_answer:string|null; discord_message_id:string|null };
+type Gap = { id:string; normalized_question:string; display_question:string|null; sample_question:string; example_questions:string[]; topic:string|null; occurrences:number; status:string; matched_sources:any[]; first_seen:string; last_seen:string; notes:string; converted_article_id:string|null; conversation_context:string|null; partial_answer:string|null; discord_message_id:string|null };
 type Category = { key:string; label:string; enabled:boolean };
 type Audience = { key:string; label:string; enabled:boolean; public_access:boolean };
 type Settings = { categories:Category[]; audiences:Audience[] };
@@ -21,7 +21,7 @@ export default async function KnowledgeGapsPage({searchParams}:{searchParams:Par
     if(can(access,'knowledge.create')) settings=await api<Settings>('/api/knowledge/settings');
   }catch(error){loadError=error instanceof Error?error.message:'Unable to load knowledge gaps.';}
   const q=String(params.q||'').trim().toLowerCase(); const status=String(params.status||'open'); const sort=String(params.sort||'occurrences');
-  const rows=gaps.filter(g=>{if(status!=='all'&&g.status!==status)return false;if(q&&!`${g.sample_question} ${g.normalized_question} ${g.topic||''} ${g.notes||''}`.toLowerCase().includes(q))return false;return true;});
+  const rows=gaps.filter(g=>{if(status!=='all'&&g.status!==status)return false;if(q&&!`${g.sample_question} ${(g.example_questions||[]).join(' ')} ${g.normalized_question} ${g.topic||''} ${g.notes||''}`.toLowerCase().includes(q))return false;return true;});
   rows.sort((a,b)=>sort==='recent'?new Date(b.last_seen).getTime()-new Date(a.last_seen).getTime():sort==='oldest'?new Date(a.first_seen).getTime()-new Date(b.first_seen).getTime():b.occurrences-a.occurrences);
   const open=gaps.filter(g=>g.status==='open').length; const totalOccurrences=gaps.reduce((sum,g)=>sum+Number(g.occurrences||0),0);
   const cats=settings.categories.filter(c=>c.enabled); const audiences=settings.audiences.filter(a=>a.enabled);
@@ -41,7 +41,7 @@ export default async function KnowledgeGapsPage({searchParams}:{searchParams:Par
         {rows.length===0?<div className="empty">No knowledge gaps match the current filters.</div>:rows.map(gap=>{const sources=sourceTitles(gap.matched_sources);return <details className="gapCard" key={gap.id}>
           <summary><div className="gapTitle"><strong>{gap.display_question||gap.normalized_question||gap.sample_question}</strong><span>{gap.topic||'Unclassified topic'}</span></div><div className="gapMetrics"><span><strong>{gap.occurrences}</strong> asks</span><span className={`badge gap-${gap.status}`}>{gap.status}</span><small>{date(gap.last_seen)}</small></div></summary>
           <div className="gapBody">
-            <div className="gapContext"><div><small>Original trigger</small><p>{gap.sample_question}</p></div><div><small>Normalized for grouping</small><p>{gap.normalized_question}</p></div><div><small>Related knowledge retrieved</small>{sources.length?<div className="tagList">{sources.map(source=><span key={source}>{source}</span>)}</div>:<p>None</p>}</div><div><small>Seen</small><p>First {date(gap.first_seen)} · Last {date(gap.last_seen)}</p></div></div>
+            <div className="gapContext"><div><small>Original trigger</small><p>{gap.sample_question}</p></div><div><small>Normalized for grouping</small><p>{gap.normalized_question}</p></div><div><small>Example player questions</small>{(gap.example_questions||[]).length?(gap.example_questions||[]).map((question,index)=><p key={`${index}-${question}`}>• {question}</p>):<p>{gap.sample_question}</p>}</div><div><small>Related knowledge retrieved</small>{sources.length?<div className="tagList">{sources.map(source=><span key={source}>{source}</span>)}</div>:<p>None</p>}</div><div><small>Seen</small><p>First {date(gap.first_seen)} · Last {date(gap.last_seen)}</p></div></div>
             {gap.conversation_context||gap.partial_answer?<details className="gapEvidence"><summary>Saved evidence used for this gap</summary>{gap.partial_answer?<div><small>Partial verified answer</small><p>{gap.partial_answer}</p></div>:null}{gap.conversation_context?<div><small>Conversation context snapshot</small><pre>{gap.conversation_context}</pre></div>:null}</details>:null}
             {can(access,'knowledge.gaps.manage')?<div className="gapActionsGrid">
               <form action={updateKnowledgeGapAction.bind(null,gap.id)} className="gapReviewForm">
