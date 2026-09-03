@@ -7,6 +7,7 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().default('redis://redis:6379'),
   DASHBOARD_API_KEY: z.string().min(16),
+  TXADMIN_COLLECTOR_TOKEN: z.string().refine(value => !value || value.length >= 32, 'TXADMIN_COLLECTOR_TOKEN must be at least 32 characters').optional().default(''),
   DASHBOARD_AUTH_REQUIRED: z.string().default('true').transform(v => v.toLowerCase() === 'true'),
   DASHBOARD_ALLOWED_USER_IDS: z.string().optional().default(''),
   DASHBOARD_ALLOWED_ROLE_IDS: z.string().optional().default(''),

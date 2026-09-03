@@ -68,11 +68,13 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'settings.tickets.manage', label: 'Manage private ticket settings', description: 'Configure the ticket panel, private categories, transcripts, routing roles, and ticket types.' },
     { key: 'settings.permissions.manage', label: 'Manage permissions', description: 'Change which Discord roles can access dashboard modules and actions.' }
   ]},
+  { key: 'txadmin', label: 'Server Intelligence', permissions: [
+    { key: 'txadmin.view', label: 'View txAdmin intelligence', description: 'View collector health, resource warnings, crashes, and FiveM server events.' },
+    { key: 'txadmin.manage', label: 'Manage txAdmin intelligence', description: 'Acknowledge server alerts and manage txAdmin integration settings.' }
+  ]},
   { key: 'planned', label: 'Planned modules', permissions: [
     { key: 'announcements.view', label: 'View announcements', description: 'View announcement drafts and history when the module is enabled.' },
-    { key: 'announcements.manage', label: 'Manage announcements', description: 'Create, schedule, edit, and send announcements when the module is enabled.' },
-    { key: 'txadmin.view', label: 'View txAdmin intelligence', description: 'View server and log intelligence when txAdmin integration is enabled.' },
-    { key: 'txadmin.manage', label: 'Manage txAdmin integration', description: 'Change txAdmin integration and server intelligence settings when the module is enabled.' }
+    { key: 'announcements.manage', label: 'Manage announcements', description: 'Create, schedule, edit, and send announcements when the module is enabled.' }
   ]}
 ];
 
@@ -96,7 +98,7 @@ const implications: Record<string, string[]> = {
   'settings.tickets.manage': ['settings.view','tickets.view'],
   'moderation.review': ['moderation.view'], 'moderation.actions': ['moderation.view'], 'moderation.punish': ['moderation.view','tickets.view'],
   'moderation.reverse': ['moderation.view','tickets.view'], 'moderation.configure': ['moderation.view','settings.view'],
-  'announcements.manage': ['announcements.view'], 'txadmin.manage': ['txadmin.view','settings.view']
+  'announcements.manage': ['announcements.view'], 'txadmin.manage': ['txadmin.view']
 };
 
 function splitIds(value?: string) {

@@ -1,0 +1,11 @@
+{
+  "Endpoint": "https://ai.saucinrp.com/api/txadmin/ingest",
+  "Token": "replace-with-the-same-token-used-on-unraid",
+  "TxDataPath": "C:\\Users\\mgsau\\Desktop\\Saucin qbox\\txData",
+  "ServerName": "Saucin RP",
+  "CollectorId": "saucin-rp-main",
+  "ScanIntervalSeconds": 5,
+  "HeartbeatSeconds": 30,
+  "MaxBatchSize": 100,
+  "StartAtEnd": true
+}

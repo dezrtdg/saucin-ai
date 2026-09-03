@@ -30,11 +30,12 @@ export async function getDashboardNotifications(input: NotificationInput) {
   const canSuggestions=allowed(input,'suggestions.view');
   const canGaps=allowed(input,'knowledge.gaps.view');
   const canModeration=allowed(input,'moderation.view');
+  const canTxAdmin=allowed(input,'txadmin.view');
 
   const none=Promise.resolve({rows:[]} as any);
   const zero=Promise.resolve({rows:[{count:0}]} as any);
   const [
-    ticketQueue,issueQueue,suggestionQueue,gapQueue,moderationQueue,
+    ticketQueue,issueQueue,suggestionQueue,gapQueue,moderationQueue,txAdminQueue,
     ticketReplies,ticketMentions,issueReplies,issueMentions,suggestionReplies,suggestionMentions
   ]=await Promise.all([
     canTickets?db.query(`SELECT count(*)::int AS count FROM tickets WHERE status='open' AND claimed_by_user_id IS NULL`):zero,
@@ -42,6 +43,7 @@ export async function getDashboardNotifications(input: NotificationInput) {
     canSuggestions?db.query(`SELECT count(*)::int AS count FROM suggestions WHERE status IN ('candidate','reviewing')`):zero,
     canGaps?db.query(`SELECT count(*)::int AS count FROM knowledge_gaps WHERE status='open'`):zero,
     canModeration?db.query(`SELECT count(*)::int AS count FROM moderation_cases WHERE status='pending'`):zero,
+    canTxAdmin?db.query(`SELECT count(*)::int AS count FROM service_events WHERE source='txadmin' AND status='open' AND severity IN ('error','critical')`):zero,
     canTickets?db.query(`
       SELECT tm.id,tm.created_at,t.id AS ticket_id,t.public_id,t.subject,tm.author_name
         FROM ticket_messages tm
@@ -182,11 +184,12 @@ export async function getDashboardNotifications(input: NotificationInput) {
     suggestions:Number(suggestionQueue.rows[0]?.count||0)+personalSuggestions,
     knowledgeGaps:Number(gapQueue.rows[0]?.count||0),
     moderation:Number(moderationQueue.rows[0]?.count||0),
+    txadmin:Number(txAdminQueue.rows[0]?.count||0),
     personal:personal.length
   };
   return {
     generated_at:new Date().toISOString(),
-    total:counts.tickets+counts.issues+counts.suggestions+counts.knowledgeGaps+counts.moderation,
+    total:counts.tickets+counts.issues+counts.suggestions+counts.knowledgeGaps+counts.moderation+counts.txadmin,
     counts,
     personal,
     queues:[
@@ -194,7 +197,8 @@ export async function getDashboardNotifications(input: NotificationInput) {
       ...(Number(issueQueue.rows[0]?.count||0)?[{key:'issues',label:'Incoming issue reports',count:Number(issueQueue.rows[0].count),href:'/issues?incoming=open'}]:[]),
       ...(Number(suggestionQueue.rows[0]?.count||0)?[{key:'suggestions',label:'Suggestions needing review',count:Number(suggestionQueue.rows[0].count),href:'/suggestions?status=candidate'}]:[]),
       ...(counts.knowledgeGaps?[{key:'knowledge-gaps',label:'Open knowledge gaps',count:counts.knowledgeGaps,href:'/knowledge-gaps?status=open'}]:[]),
-      ...(counts.moderation?[{key:'moderation',label:'Moderation reviews',count:counts.moderation,href:'/moderation?status=pending'}]:[])
+      ...(counts.moderation?[{key:'moderation',label:'Moderation reviews',count:counts.moderation,href:'/moderation?status=pending'}]:[]),
+      ...(counts.txadmin?[{key:'txadmin',label:'Server errors',count:counts.txadmin,href:'/txadmin?status=open&severity=error'}]:[])
     ]
   };
 }

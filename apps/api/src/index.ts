@@ -7,6 +7,7 @@ import { healthRoutes } from './routes/health.js';
 import { adminRoutes } from './routes/admin.js';
 import { liveModerationRoutes } from './routes/liveModeration.js';
 import { suggestionRoutes } from './routes/suggestions.js';
+import { txAdminRoutes } from './routes/txadmin.js';
 import { backfillKnowledgeEmbeddings, consolidateOpenKnowledgeGaps } from './services/knowledge.js';
 import { backfillIssueEmbeddings } from './services/issues.js';
 import { backfillSuggestionEmbeddings } from './services/suggestions.js';
@@ -23,8 +24,9 @@ await app.register(healthRoutes);
 await app.register(adminRoutes);
 await app.register(liveModerationRoutes);
 await app.register(suggestionRoutes);
+await app.register(txAdminRoutes);
 
-app.get('/', async () => ({ service: 'Saucin AI API', version: '1.7.1' }));
+app.get('/', async () => ({ service: 'Saucin AI API', version: '1.8.0' }));
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
 startModerationNoticeEnricher();

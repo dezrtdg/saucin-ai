@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useCallback,useEffect,useMemo,useState } from 'react';
 import SidebarNav from './SidebarNav';
 
-type Counts={tickets:number;issues:number;suggestions:number;knowledgeGaps:number;moderation:number;personal:number};
+type Counts={tickets:number;issues:number;suggestions:number;knowledgeGaps:number;moderation:number;txadmin:number;personal:number};
 type PersonalKind='ticket_reply'|'ticket_mention'|'issue_reply'|'issue_mention'|'suggestion_reply'|'suggestion_mention';
 type PersonalItem={key:string;kind:PersonalKind;title:string;detail:string;href:string;created_at:string};
 const personalBucket:Record<PersonalKind,keyof Counts>={ticket_reply:'tickets',ticket_mention:'tickets',issue_reply:'issues',issue_mention:'issues',suggestion_reply:'suggestions',suggestion_mention:'suggestions'};
@@ -13,7 +13,7 @@ type QueueItem={key:string;label:string;count:number;href:string};
 type NoticeData={generated_at:string;total:number;counts:Counts;personal:PersonalItem[];queues:QueueItem[]};
 type User={displayName:string;avatar:string|null;initials:string}|null;
 
-const emptyCounts:Counts={tickets:0,issues:0,suggestions:0,knowledgeGaps:0,moderation:0,personal:0};
+const emptyCounts:Counts={tickets:0,issues:0,suggestions:0,knowledgeGaps:0,moderation:0,txadmin:0,personal:0};
 function ago(value:string){
   const minutes=Math.max(1,Math.floor((Date.now()-new Date(value).getTime())/60000));
   if(minutes<60)return `${minutes}m ago`;

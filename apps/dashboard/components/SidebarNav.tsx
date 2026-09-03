@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-type BadgeKey='tickets'|'issues'|'suggestions'|'knowledgeGaps'|'moderation';
+type BadgeKey='tickets'|'issues'|'suggestions'|'knowledgeGaps'|'moderation'|'txadmin';
 type NavItem={name:string;href:string;permission?:string;icon:string;badge?:BadgeKey};
 type NavGroup={label:string;items:NavItem[]};
 
@@ -22,6 +22,7 @@ const groups:NavGroup[]=[
     {name:'Knowledge gaps',href:'/knowledge-gaps',permission:'knowledge.gaps.view',icon:'?',badge:'knowledgeGaps'}
   ]},
   {label:'SYSTEM',items:[
+    {name:'txAdmin',href:'/txadmin',permission:'txadmin.view',icon:'⌁',badge:'txadmin'},
     {name:'Channels',href:'/channels',permission:'channels.view',icon:'#'},
     {name:'Settings',href:'/settings',permission:'settings.view',icon:'⚙'}
   ]}

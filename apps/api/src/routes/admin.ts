@@ -11,6 +11,7 @@ import { allPermissionKeys, parseDashboardIdentity, permissionCatalog, permissio
 import { clearModerationDiagnostics, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
 import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, releaseTicket, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
 import { getDashboardNotifications, markDashboardNotificationsRead } from '../services/dashboardNotifications.js';
+import { acknowledgeTxAdminEvent, getTxAdminOverview, listTxAdminEvents, resolveTxAdminEvent } from '../services/txadmin.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -26,6 +27,10 @@ function routeRequirement(method: string, route: string): string[] | null {
     'GET /api/activity': ['dashboard.view'],
     'GET /api/notifications': ['dashboard.access'],
     'POST /api/notifications/read': ['dashboard.access'],
+    'GET /api/txadmin/overview': ['txadmin.view'],
+    'GET /api/txadmin/events': ['txadmin.view'],
+    'POST /api/txadmin/events/:id/acknowledge': ['txadmin.manage'],
+    'POST /api/txadmin/events/:id/resolve': ['txadmin.manage'],
     'GET /api/channels': ['channels.view'],
     'POST /api/channels/sync': ['channels.manage'],
     'PUT /api/channels': ['channels.manage'],
@@ -360,6 +365,36 @@ export async function adminRoutes(app: FastifyInstance) {
       const body=z.object({keys:z.array(z.string().trim().min(1).max(100)).max(100)}).parse(request.body);
       const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
       return {ok:true,marked:await markDashboardNotificationsRead(identity.userId||'dashboard',body.keys)};
+    });
+
+    admin.get('/api/txadmin/overview', async () => getTxAdminOverview());
+
+    admin.get('/api/txadmin/events', async (request) => {
+      const query=z.object({
+        status:z.enum(['all','open','acknowledged','resolved']).default('open'),
+        severity:z.enum(['all','info','warning','error','critical']).default('all'),
+        category:z.string().trim().max(80).default('all'),
+        resource:z.string().trim().max(160).default(''),
+        q:z.string().trim().max(300).default(''),
+        limit:z.coerce.number().int().min(1).max(300).default(100)
+      }).parse(request.query);
+      return listTxAdminEvents({...query,query:query.q});
+    });
+
+    admin.post('/api/txadmin/events/:id/acknowledge', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      const event=await acknowledgeTxAdminEvent(params.id,identity.userId||'dashboard');
+      if(!event)return reply.code(404).send({error:'txAdmin event not found'});
+      return event;
+    });
+
+    admin.post('/api/txadmin/events/:id/resolve', async (request,reply) => {
+      const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      const event=await resolveTxAdminEvent(params.id,identity.userId||'dashboard');
+      if(!event)return reply.code(404).send({error:'txAdmin event not found'});
+      return event;
     });
 
     admin.get('/api/permissions/roles', async (request) => {
