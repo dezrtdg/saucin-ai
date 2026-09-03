@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$CollectorVersion = '1.0.1'
+$CollectorVersion = '1.0.2'
 $InstallDirectory = Split-Path -Parent $ConfigPath
 $StatePath = Join-Path $InstallDirectory 'state.json'
 $PendingPath = Join-Path $InstallDirectory 'pending.json'
@@ -233,7 +233,8 @@ try {
                 }
                 $lastFxServerRunning = $fxServerRunning
                 $take = [Math]::Min($maxBatch, $pending.Count)
-                $batch = if ($take -gt 0) { @($pending.GetRange(0, $take)) } else { @() }
+                $batch = @()
+                if ($take -gt 0) { $batch = @($pending.GetRange(0, $take)) }
                 $payload = [ordered]@{
                     collector_id = [string]$config.CollectorId
                     server_name = [string]$config.ServerName
