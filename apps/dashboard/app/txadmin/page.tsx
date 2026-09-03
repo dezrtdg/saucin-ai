@@ -33,6 +33,7 @@ export default async function TxAdminPage({searchParams}:{searchParams:Params}){
   catch(error){loadError=error instanceof Error?error.message:'Unable to load server intelligence.';}
   const canManage=can(access,'txadmin.manage');
   const connectionLabel=overview.connection==='online'?'Collector online':overview.connection==='stale'?'Collector delayed':overview.connection==='offline'?'Collector offline':'Setup required';
+  const fxServerRunning=overview.collector?.metadata?.fxserver_running===true;
 
   return <>
     <LiveRefresh interval={20000}/>
@@ -40,11 +41,12 @@ export default async function TxAdminPage({searchParams}:{searchParams:Params}){
     {loadError?<div className="alert error">Could not load txAdmin intelligence: {loadError}</div>:null}
 
     <section className="txSummary">
-      <div className="txCollectorCard"><div className={`txCollectorIcon ${overview.connection}`}>◎</div><div><small>COLLECTOR</small><strong>{overview.collector?.hostname||'Windows collector not connected'}</strong><span>{overview.collector?`Heartbeat ${ago(overview.collector.last_heartbeat_at)} · v${overview.collector.collector_version}`:'Install the collector after deploying this update.'}</span></div></div>
+      <div className="txCollectorCard"><div className={`txCollectorIcon ${overview.connection}`}>◎</div><div><small>COLLECTOR</small><strong>{overview.collector?.hostname||'Windows collector not connected'}</strong><span>{overview.collector?`Heartbeat ${ago(overview.collector.last_heartbeat_at)} · FXServer ${fxServerRunning?'running':'not detected'} · v${overview.collector.collector_version}`:'Install the collector after deploying this update.'}</span></div></div>
       <div className="txMetric critical"><small>OPEN ERRORS</small><strong>{Number(overview.stats.open_errors||0)}</strong><span>need attention</span></div>
       <div className="txMetric warning"><small>WARNINGS</small><strong>{Number(overview.stats.open_warnings||0)}</strong><span>currently open</span></div>
       <div className="txMetric"><small>OCCURRENCES</small><strong>{Number(overview.stats.occurrences_24h||0)}</strong><span>last 24 hours</span></div>
       <div className="txMetric matched"><small>KNOWN ISSUE MATCHES</small><strong>{Number(overview.stats.matched_issues_24h||0)}</strong><span>last 24 hours</span></div>
+      <div className={`txMetric process ${overview.collector?(fxServerRunning?'running':'stopped'):''}`}><small>FXSERVER</small><strong>{overview.collector?(fxServerRunning?'Online':'Stopped'):'—'}</strong><span>exact process state</span></div>
     </section>
 
     {overview.collector?<details className="consolePanel txCollectorDetails"><summary><div><strong>Collector details</strong><span>{overview.collector.server_name} · {overview.collector.hostname}</span></div><b>View</b></summary><dl><div><dt>txData path</dt><dd>{overview.collector.txdata_path}</dd></div><div><dt>Collector ID</dt><dd>{overview.collector.collector_id}</dd></div><div><dt>First connected</dt><dd>{date(overview.collector.first_seen_at)}</dd></div><div><dt>Last heartbeat</dt><dd>{date(overview.collector.last_heartbeat_at)}</dd></div></dl></details>:null}

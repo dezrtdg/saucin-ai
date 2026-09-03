@@ -27,11 +27,14 @@ The installer is preconfigured for:
 
 ```text
 C:\Users\mgsau\Desktop\Saucin qbox\txData
+C:\Users\mgsau\Desktop\Saucin qbox\server\FXServer.exe
 ```
 
 It prompts for the token, installs under `C:\ProgramData\SaucinAI\txadmin-collector`, locks the folder to Administrators and SYSTEM, creates a startup scheduled task, and starts it immediately.
 
 The dashboard should show **Collector online** within 30 seconds. The collector starts at the end of existing log files, so old logs are not uploaded; new warnings and errors appear as they happen.
+
+The txData path is used only for `.log` monitoring. The server path is used only to verify whether that exact `FXServer.exe` process is running and to report start/stop transitions; the collector does not scan resources or execute anything in the server directory.
 
 ## Troubleshooting
 

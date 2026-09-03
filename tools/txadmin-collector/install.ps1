@@ -1,6 +1,7 @@
 param(
     [string]$Token = '',
     [string]$TxDataPath = 'C:\Users\mgsau\Desktop\Saucin qbox\txData',
+    [string]$FxServerPath = 'C:\Users\mgsau\Desktop\Saucin qbox\server',
     [string]$Endpoint = 'https://ai.saucinrp.com/api/txadmin/ingest',
     [string]$ServerName = 'Saucin RP',
     [string]$CollectorId = 'saucin-rp-main'
@@ -19,6 +20,9 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw 'Open PowerShell as Administrator, then run install.ps1 again.'
 }
 if (-not (Test-Path -LiteralPath $TxDataPath -PathType Container)) { throw "txData path does not exist: $TxDataPath" }
+if (-not (Test-Path -LiteralPath $FxServerPath -PathType Container)) { throw "FXServer directory does not exist: $FxServerPath" }
+$FxServerExecutable = Join-Path $FxServerPath 'FXServer.exe'
+if (-not (Test-Path -LiteralPath $FxServerExecutable -PathType Leaf)) { throw "FXServer.exe was not found: $FxServerExecutable" }
 if (-not (Test-Path -LiteralPath $CollectorSource -PathType Leaf)) { throw "collector.ps1 was not found beside this installer." }
 if ([string]::IsNullOrWhiteSpace($Token)) {
     $secureToken = Read-Host 'Paste the TXADMIN_COLLECTOR_TOKEN from your Unraid .env file' -AsSecureString
@@ -34,6 +38,7 @@ $config = [ordered]@{
     Endpoint = $Endpoint
     Token = $Token
     TxDataPath = [IO.Path]::GetFullPath($TxDataPath)
+    FxServerPath = [IO.Path]::GetFullPath($FxServerPath)
     ServerName = $ServerName
     CollectorId = $CollectorId
     ScanIntervalSeconds = 5
@@ -55,5 +60,6 @@ Start-ScheduledTask -TaskName $TaskName
 Write-Host ''
 Write-Host 'Saucin AI txAdmin collector installed and started.' -ForegroundColor Green
 Write-Host "txData: $($config.TxDataPath)"
+Write-Host "FXServer: $($config.FxServerPath)\FXServer.exe"
 Write-Host "Endpoint: $Endpoint"
 Write-Host 'Open the Saucin AI dashboard → txAdmin. It should show online within 30 seconds.'

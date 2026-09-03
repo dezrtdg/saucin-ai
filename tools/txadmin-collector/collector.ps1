@@ -56,6 +56,20 @@ function Get-Hash {
     } finally { $sha.Dispose() }
 }
 
+function Get-FxServerProcess {
+    param([string]$ExecutablePath)
+    try {
+        $expected = [IO.Path]::GetFullPath($ExecutablePath)
+        $processes = Get-CimInstance Win32_Process -Filter "Name='FXServer.exe'" -ErrorAction Stop
+        foreach ($process in $processes) {
+            if ($process.ExecutablePath -and [IO.Path]::GetFullPath([string]$process.ExecutablePath).Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+                return $process
+            }
+        }
+    } catch { Write-CollectorLog "Could not query FXServer process state: $($_.Exception.Message)" }
+    return $null
+}
+
 function Get-ResourceName {
     param([string]$Line)
     $patterns = @(
@@ -134,11 +148,14 @@ function Save-StateMap {
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Collector config was not found: $ConfigPath" }
 $config = Read-JsonFile $ConfigPath $null
 if (-not $config) { throw 'Collector config is invalid.' }
-foreach ($required in @('Endpoint','Token','TxDataPath','ServerName','CollectorId')) {
+foreach ($required in @('Endpoint','Token','TxDataPath','FxServerPath','ServerName','CollectorId')) {
     if ([string]::IsNullOrWhiteSpace([string]$config.$required)) { throw "Collector config is missing $required." }
 }
 $txDataFull = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables([string]$config.TxDataPath)).TrimEnd('\')
 if (-not (Test-Path -LiteralPath $txDataFull -PathType Container)) { throw "txData path does not exist: $txDataFull" }
+$fxServerDirectory = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables([string]$config.FxServerPath)).TrimEnd('\')
+$fxServerExecutable = Join-Path $fxServerDirectory 'FXServer.exe'
+if (-not (Test-Path -LiteralPath $fxServerExecutable -PathType Leaf)) { throw "FXServer.exe does not exist: $fxServerExecutable" }
 
 $mutex = New-Object Threading.Mutex($false, 'Global\SaucinAI_txAdmin_Collector')
 if (-not $mutex.WaitOne(0, $false)) { Write-CollectorLog 'Another collector instance is already running.'; exit 0 }
@@ -149,6 +166,7 @@ try {
     $pending = New-Object System.Collections.ArrayList
     if ($pendingLoaded) { foreach ($item in @($pendingLoaded)) { [void]$pending.Add($item) } }
     $lastHeartbeat = [DateTime]::MinValue
+    $lastFxServerRunning = $null
     $scanSeconds = [Math]::Max(2, [int]$config.ScanIntervalSeconds)
     $heartbeatSeconds = [Math]::Max(15, [int]$config.HeartbeatSeconds)
     $maxBatch = [Math]::Min(100, [Math]::Max(1, [int]$config.MaxBatchSize))
@@ -192,6 +210,25 @@ try {
 
             $heartbeatDue = ([DateTime]::UtcNow - $lastHeartbeat).TotalSeconds -ge $heartbeatSeconds
             if ($pending.Count -gt 0 -or $heartbeatDue) {
+                $fxProcess = Get-FxServerProcess $fxServerExecutable
+                $fxServerRunning = $null -ne $fxProcess
+                if ($null -ne $lastFxServerRunning -and $lastFxServerRunning -ne $fxServerRunning) {
+                    $processMessage = if ($fxServerRunning) { 'FXServer process started.' } else { 'FXServer process stopped or is no longer reachable.' }
+                    $processEvent = [ordered]@{
+                        occurred_at = [DateTime]::UtcNow.ToString('o')
+                        severity = if ($fxServerRunning) { 'info' } else { 'critical' }
+                        event_type = if ($fxServerRunning) { 'server.process_started' } else { 'server.process_stopped' }
+                        category = 'server'
+                        resource_name = $null
+                        message = $processMessage
+                        fingerprint = Get-Hash $processMessage
+                        source_file = 'FXServer.exe'
+                        line_number = $null
+                        metadata = @{ process_id = if ($fxProcess) { [int]$fxProcess.ProcessId } else { $null } }
+                    }
+                    [void]$pending.Add($processEvent)
+                }
+                $lastFxServerRunning = $fxServerRunning
                 $take = [Math]::Min($maxBatch, $pending.Count)
                 $batch = if ($take -gt 0) { @($pending.GetRange(0, $take)) } else { @() }
                 $payload = [ordered]@{
@@ -201,7 +238,13 @@ try {
                     txdata_path = $txDataFull
                     collector_version = $CollectorVersion
                     heartbeat_at = [DateTime]::UtcNow.ToString('o')
-                    metadata = @{ operating_system = [Environment]::OSVersion.VersionString; powershell = $PSVersionTable.PSVersion.ToString() }
+                    metadata = @{
+                        operating_system = [Environment]::OSVersion.VersionString
+                        powershell = $PSVersionTable.PSVersion.ToString()
+                        fxserver_running = $fxServerRunning
+                        fxserver_process_id = if ($fxProcess) { [int]$fxProcess.ProcessId } else { $null }
+                        fxserver_path = $fxServerExecutable
+                    }
                     events = $batch
                 }
                 $headers = @{ Authorization = "Bearer $($config.Token)" }
