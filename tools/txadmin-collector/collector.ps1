@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$CollectorVersion = '1.0.0'
+$CollectorVersion = '1.0.1'
 $InstallDirectory = Split-Path -Parent $ConfigPath
 $StatePath = Join-Path $InstallDirectory 'state.json'
 $PendingPath = Join-Path $InstallDirectory 'pending.json'
@@ -30,7 +30,9 @@ function Write-JsonFile {
     param([string]$Path, $Value)
     $temporary = "$Path.tmp"
     $json = ConvertTo-Json -InputObject $Value -Depth 10 -Compress
-    Set-Content -LiteralPath $temporary -Value $json -Encoding UTF8
+    if ([string]::IsNullOrEmpty([string]$json)) { $json = '[]' }
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($temporary, [string]$json, $utf8)
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
