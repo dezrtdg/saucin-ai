@@ -11,7 +11,7 @@ import { allPermissionKeys, parseDashboardIdentity, permissionCatalog, permissio
 import { clearModerationDiagnostics, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
 import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, releaseTicket, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
 import { getDashboardNotifications, markDashboardNotificationsRead } from '../services/dashboardNotifications.js';
-import { acknowledgeTxAdminEvent, getTxAdminOverview, listTxAdminEvents, resolveTxAdminEvent } from '../services/txadmin.js';
+import { acknowledgeTxAdminEvent, getTxAdminOverview, getTxAdminSettings, listTxAdminEvents, resolveTxAdminEvent, updateTxAdminSettings } from '../services/txadmin.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -29,6 +29,8 @@ function routeRequirement(method: string, route: string): string[] | null {
     'POST /api/notifications/read': ['dashboard.access'],
     'GET /api/txadmin/overview': ['txadmin.view'],
     'GET /api/txadmin/events': ['txadmin.view'],
+    'GET /api/txadmin/settings': ['txadmin.manage'],
+    'PUT /api/txadmin/settings': ['txadmin.manage'],
     'POST /api/txadmin/events/:id/acknowledge': ['txadmin.manage'],
     'POST /api/txadmin/events/:id/resolve': ['txadmin.manage'],
     'GET /api/channels': ['channels.view'],
@@ -221,6 +223,14 @@ const issueAutomationBody = z.object({
   include_affected_count: z.boolean()
 });
 const issueTemplateBody = z.object({ template: z.string().trim().min(1).max(4000), enabled: z.boolean() });
+const txAdminSettingsBody=z.object({
+  group_window_minutes:z.coerce.number().int().min(5).max(1440),
+  auto_draft_enabled:z.boolean(),draft_min_occurrences:z.coerce.number().int().min(2).max(1000),
+  alert_channel_id:z.string().trim().max(32).nullable().optional(),
+  alert_role_ids:z.array(z.string().trim().min(1).max(32)).max(100),
+  notify_critical:z.boolean(),notify_recurring_errors:z.boolean(),hide_alert_mentions:z.boolean(),
+  noise_patterns:z.array(z.string().trim().min(3).max(300)).max(100)
+});
 const issueBody = z.object({
   title: z.string().trim().min(3).max(200),
   description: z.string().trim().max(12000).default(''),
@@ -369,6 +379,19 @@ export async function adminRoutes(app: FastifyInstance) {
 
     admin.get('/api/txadmin/overview', async () => getTxAdminOverview());
 
+    admin.get('/api/txadmin/settings', async () => {
+      const [settings,destinations,roles]=await Promise.all([getTxAdminSettings(),discordTicketDestinations(),discordRoles()]);
+      return {settings,channels:destinations.text_channels,roles};
+    });
+
+    admin.put('/api/txadmin/settings', async request => {
+      const body=txAdminSettingsBody.parse(request.body);
+      return updateTxAdminSettings({
+        ...body,alert_channel_id:body.alert_channel_id||null,
+        alert_role_ids:[...new Set(body.alert_role_ids)],noise_patterns:[...new Set(body.noise_patterns)]
+      });
+    });
+
     admin.get('/api/txadmin/events', async (request) => {
       const query=z.object({
         status:z.enum(['all','open','acknowledged','resolved']).default('open'),
@@ -376,6 +399,7 @@ export async function adminRoutes(app: FastifyInstance) {
         category:z.string().trim().max(80).default('all'),
         resource:z.string().trim().max(160).default(''),
         q:z.string().trim().max(300).default(''),
+        noise:z.enum(['hide','only','all']).default('hide'),
         limit:z.coerce.number().int().min(1).max(300).default(100)
       }).parse(request.query);
       return listTxAdminEvents({...query,query:query.q});
@@ -1432,7 +1456,7 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
 
     admin.get('/api/issues/candidates', async () => {
       const result = await db.query(`
-        SELECT c.id,c.sample_text,c.normalized_text,c.topic,c.related_terms,c.discord_user_id,c.channel_id,c.occurrence_count,c.confirmed_count,
+        SELECT c.id,c.sample_text,c.normalized_text,c.topic,c.related_terms,c.discord_user_id,c.channel_id,c.occurrence_count,c.confirmed_count,c.source,
                c.status,c.matched_issue_id,c.first_seen,c.last_seen,c.created_at,c.updated_at,
                COALESCE((
                  SELECT jsonb_agg(ej ORDER BY ej.created_at DESC)

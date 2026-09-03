@@ -448,6 +448,10 @@ export async function linkCandidateToIssue(candidateId: number, issueId: number)
       [issueId, candidateId]
     );
     await clientDb.query(
+      `UPDATE service_events SET matched_issue_id=$1 WHERE source='txadmin' AND issue_candidate_id=$2`,
+      [issueId, candidateId]
+    );
+    await clientDb.query(
       `INSERT INTO issue_updates (issue_id,update_type,from_value,to_value,note,created_by)
        VALUES ($1,'candidate_link',NULL,$2,$3,'dashboard')`,
       [issueId, String(candidateId), `Linked incoming candidate #${candidateId}; transferred ${insertedReports} unique report(s).`]

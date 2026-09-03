@@ -92,6 +92,27 @@ export type DiscordForumTagMetadata = {
   moderated: boolean;
 };
 
+export async function sendTxAdminEventAlert(input:{
+  channelId:string;roleIds:string[];hideMentions:boolean;eventId:number;severity:'error'|'critical';eventType:string;
+  category:string;resourceName:string|null;message:string;repeatCount:number;matchedIssueId:number|null;candidateId:number|null;
+}){
+  if(!discord.isReady())return false;
+  const channel=await discord.channels.fetch(input.channelId).catch(()=>null);
+  if(!channel||(channel as any).isTextBased?.()!==true||typeof (channel as any).send!=='function')return false;
+  const roleIds=[...new Set(input.roleIds.map(String).filter(Boolean))];
+  const mentions=roleIds.map(id=>input.hideMentions?`||<@&${id}>||`:`<@&${id}>`).join(' ');
+  const heading=input.severity==='critical'?'🚨 Critical FXServer alert':'⚠️ Recurring FXServer error';
+  const tracking=input.matchedIssueId?`Matched known issue #${input.matchedIssueId}`:
+    input.candidateId?`Created review draft #${input.candidateId}`:'Needs staff review';
+  const lines=[mentions,`**${heading}**`,
+    `**Resource:** ${input.resourceName||'Server'} · **Occurrences:** ${input.repeatCount}`,
+    `**Type:** ${input.eventType} · ${input.category}`,
+    `\`\`\`${input.message.slice(0,1200).replace(/```/g,'` ` `')}\`\`\``,
+    `${tracking}. Open **Saucin AI → txAdmin** to review.`].filter(Boolean);
+  await (channel as any).send({content:lines.join('\n').slice(0,1950),allowedMentions:{roles:roleIds}});
+  return true;
+}
+
 function modeAllows(policyMode: string, intent: string) {
   if (policyMode === 'full') return true;
   if (policyMode === 'questions') return intent === 'question';

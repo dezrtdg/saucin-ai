@@ -43,7 +43,7 @@ export async function getDashboardNotifications(input: NotificationInput) {
     canSuggestions?db.query(`SELECT count(*)::int AS count FROM suggestions WHERE status IN ('candidate','reviewing')`):zero,
     canGaps?db.query(`SELECT count(*)::int AS count FROM knowledge_gaps WHERE status='open'`):zero,
     canModeration?db.query(`SELECT count(*)::int AS count FROM moderation_cases WHERE status='pending'`):zero,
-    canTxAdmin?db.query(`SELECT count(*)::int AS count FROM service_events WHERE source='txadmin' AND status='open' AND severity IN ('error','critical')`):zero,
+    canTxAdmin?db.query(`SELECT count(*)::int AS count FROM service_events WHERE source='txadmin' AND status='open' AND NOT suppressed AND severity IN ('error','critical')`):zero,
     canTickets?db.query(`
       SELECT tm.id,tm.created_at,t.id AS ticket_id,t.public_id,t.subject,tm.author_name
         FROM ticket_messages tm

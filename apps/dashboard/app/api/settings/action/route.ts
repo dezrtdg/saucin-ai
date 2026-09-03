@@ -21,6 +21,20 @@ export async function POST(request:Request){
     const id=resource(formData);
 
     switch(operation){
+      case 'txadmin.settings.update':
+        await call('/api/txadmin/settings',{method:'PUT',body:JSON.stringify({
+          group_window_minutes:Math.max(5,Math.min(1440,integer(formData,'group_window_minutes',60))),
+          auto_draft_enabled:checked(formData,'auto_draft_enabled'),
+          draft_min_occurrences:Math.max(2,Math.min(1000,integer(formData,'draft_min_occurrences',5))),
+          alert_channel_id:value(formData,'alert_channel_id')||null,
+          alert_role_ids:unique(formData,'alert_role_ids'),
+          notify_critical:checked(formData,'notify_critical'),
+          notify_recurring_errors:checked(formData,'notify_recurring_errors'),
+          hide_alert_mentions:checked(formData,'hide_alert_mentions'),
+          noise_patterns:value(formData,'noise_patterns').split(/\r?\n/).map(item=>item.trim()).filter(Boolean)
+        })});
+        break;
+
       case 'bot.update': {
         const count=Number(value(formData,'direct_mentions_context_messages')||8);
         await call('/api/bot/settings',{method:'PUT',body:JSON.stringify({

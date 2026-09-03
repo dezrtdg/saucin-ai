@@ -18,7 +18,7 @@ type Issue = {
 
 type Candidate = {
   id: string; sample_text: string; normalized_text: string; topic: string | null; related_terms: string[];
-  occurrence_count: number; confirmed_count: number; status: string; matched_issue_id: string | null;
+  occurrence_count: number; confirmed_count: number; status: string; matched_issue_id: string | null;source?:string;
   first_seen: string; last_seen: string; recent_samples?: ReportEvidence[];
 };
 
@@ -93,7 +93,7 @@ export default async function IssuesPage({ searchParams }: { searchParams: Param
     {loadError ? <div className="alert error">Could not load issues: {loadError}</div> : null}
 
     <section className="issueViewPanel">
-      <div className="issueSectionHeader"><div><span className="sectionLabel">INCOMING</span><h2>Incoming possible issues</h2><p>Unmatched player reports that need review, linking, promotion, or dismissal.</p></div><span className="countPill">{visibleCandidates.length}</span></div>
+      <div className="issueSectionHeader"><div><span className="sectionLabel">INCOMING</span><h2>Incoming possible issues</h2><p>Unmatched player reports and recurring txAdmin errors that need review, linking, promotion, or dismissal.</p></div><span className="countPill">{visibleCandidates.length}</span></div>
       <form className="issueIncomingToolbar" method="get" action="/issues">
         <input type="hidden" name="q" value={params.q || ''}/><input type="hidden" name="status" value={params.status || 'active'}/><input type="hidden" name="severity" value={params.severity || 'all'}/><input type="hidden" name="sort" value={params.sort || 'activity'}/><input type="hidden" name="category" value={params.category || 'all'}/>
         <select className="input select" name="incoming" defaultValue={incoming}><option value="open">Needs review</option><option value="all">All incoming</option><option value="detected">Detected</option><option value="reported">Confirmed reports</option><option value="promoted">Linked / promoted</option><option value="dismissed">Dismissed</option></select>
@@ -101,7 +101,7 @@ export default async function IssuesPage({ searchParams }: { searchParams: Param
       </form>
       <div className="incomingRows">
         {visibleCandidates.length===0 ? <div className="emptyLibrary"><strong>No incoming reports</strong><span>Nothing matches the current incoming filter.</span></div> : visibleCandidates.map(candidate => <details className="incomingRow" key={candidate.id}>
-          <summary><div className="incomingPrimary"><strong>{candidate.topic || 'Possible server issue'}</strong><span>{candidate.sample_text}</span></div><div className="incomingMeta"><span>{candidate.occurrence_count} mentions</span><span>{candidate.confirmed_count} confirmed</span><span className={`statusBadge status-${candidate.status}`}>{pretty(candidate.status)}</span></div></summary>
+          <summary><div className="incomingPrimary"><strong>{candidate.topic || 'Possible server issue'}</strong><span>{candidate.sample_text}</span></div><div className="incomingMeta"><span>{candidate.source==='txadmin'?'txAdmin':'Discord'}</span><span>{candidate.occurrence_count} {candidate.source==='txadmin'?'occurrences':'mentions'}</span>{candidate.source!=='txadmin'?<span>{candidate.confirmed_count} confirmed</span>:null}<span className={`statusBadge status-${candidate.status}`}>{pretty(candidate.status)}</span></div></summary>
           <div className="incomingDetail">
             {candidate.related_terms?.length ? <div className="tagCloud">{candidate.related_terms.map(term=><span key={term}>{term}</span>)}</div> : null}
             <div className="incomingSeen">First seen {date(candidate.first_seen)} · Last seen {date(candidate.last_seen)}</div>
