@@ -62,4 +62,4 @@ Write-Host 'Saucin AI txAdmin collector installed and started.' -ForegroundColor
 Write-Host "txData: $($config.TxDataPath)"
 Write-Host "FXServer: $($config.FxServerPath)\FXServer.exe"
 Write-Host "Endpoint: $Endpoint"
-Write-Host 'Open the Saucin AI dashboard → txAdmin. It should show online within 30 seconds.'
+Write-Host 'Open the Saucin AI dashboard, then select txAdmin. It should show online within 30 seconds.'
