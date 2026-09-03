@@ -104,8 +104,14 @@ export default function DashboardActionFeedback(){
   },[pathname,search,restorePending]);
 
   useEffect(()=>{
-    if(!feedback || feedback.kind==='loading') return;
-    const timer=window.setTimeout(()=>setFeedback(null),4200);
+    if(!feedback) return;
+    const timer=window.setTimeout(()=>{
+      if(feedback.kind==='loading'){
+        setFeedback({kind:'error',message:'This action is taking longer than expected. Check the page and try again.'});
+      }else{
+        setFeedback(null);
+      }
+    },feedback.kind==='loading'?20000:4200);
     return ()=>window.clearTimeout(timer);
   },[feedback]);
 
@@ -115,6 +121,10 @@ export default function DashboardActionFeedback(){
       const form=submitEvent.target instanceof HTMLFormElement?submitEvent.target:null;
       if(!form) return;
       if((form.getAttribute('method')||'').toLowerCase()==='get') return;
+      // Client-managed forms report their own saved/error state. Treating them as
+      // server actions here leaves the global toast waiting for a redirect that
+      // will never happen.
+      if(form.dataset.dashboardManagedState==='true') return;
       saveView();
       form.dataset.dashboardPending='true';
       const submitter=submitEvent.submitter instanceof HTMLElement?submitEvent.submitter:null;
