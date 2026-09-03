@@ -237,6 +237,18 @@ export async function releaseTicket(id:number,actor:{userId:string;name:string},
   return result.rows[0]||null;
 }
 
+export async function resumeTicketAfterUserReply(id:number,userId:string,userName:string,messageId:string){
+  const result=await db.query(`
+    UPDATE tickets
+       SET status=CASE WHEN claimed_by_user_id IS NULL THEN 'open' ELSE 'claimed' END,updated_at=NOW()
+     WHERE id=$1 AND opener_user_id=$2 AND status='awaiting_user' RETURNING *`,[id,userId]);
+  if(result.rowCount) await addTicketEvent(id,'user_replied',userId,userName,{
+    resumed_status:result.rows[0].status,
+    discord_message_id:messageId
+  });
+  return result.rows[0]||null;
+}
+
 export async function reopenTicketRecord(id:number,channelId:string,controlMessageId:string,actor:{userId:string;name:string}){
   const result=await db.query(`
     UPDATE tickets

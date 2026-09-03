@@ -62,6 +62,7 @@ import {
   markTicketChannelDeleted,
   releaseTicket,
   reopenTicketRecord,
+  resumeTicketAfterUserReply,
   saveTicketMessage,
   setTicketPanelMessage,
   setTicketStatus,
@@ -1297,6 +1298,21 @@ async function handleMessage(message: Message) {
   const linkedTicket=await getTicketByChannel(message.channelId);
   if(linkedTicket){
     await captureTicketMessage(message,linkedTicket).catch(error=>console.error('[tickets] failed to capture ticket message',error));
+    const resumed=await resumeTicketAfterUserReply(
+      Number(linkedTicket.id),message.author.id,message.author.globalName||message.author.username,message.id
+    ).catch(error=>{console.error('[tickets] automatic waiting status update failed',error);return null;});
+    if(resumed){
+      const settings=await getTicketSettings();
+      const claimedUserId=resumed.claimed_by_user_id?String(resumed.claimed_by_user_id):null;
+      const roleIds: string[]=claimedUserId?[]:(linkedTicket.support_role_ids||[]).map(String);
+      const staffPing=claimedUserId
+        ?`||<@${claimedUserId}>||`
+        :roleIds.map(roleId=>settings.hide_staff_mentions?`||<@&${roleId}>||`:`<@&${roleId}>`).join(' ');
+      await message.reply({
+        content:`✅ Thanks — **${resumed.public_id}** is back with staff for review.${staffPing?`\n${staffPing}`:''}`,
+        allowedMentions:{users:claimedUserId?[claimedUserId]:[],roles:roleIds,repliedUser:false}
+      }).catch(()=>null);
+    }
     return;
   }
 
