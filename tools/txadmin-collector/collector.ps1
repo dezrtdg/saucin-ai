@@ -23,7 +23,7 @@ function Read-JsonFile {
     param([string]$Path, $Default)
     if (-not (Test-Path -LiteralPath $Path)) { return $Default }
     try { return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json }
-    catch { Write-CollectorLog "Could not read $Path: $($_.Exception.Message)"; return $Default }
+    catch { Write-CollectorLog "Could not read ${Path}: $($_.Exception.Message)"; return $Default }
 }
 
 function Write-JsonFile {
