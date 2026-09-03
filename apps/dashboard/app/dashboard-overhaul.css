@@ -2,7 +2,7 @@
 .dashboardV2{--shell:#0a0a0d;--surface:#101014;--surface-raised:#15151a;--stroke:#24242b;--quiet:#777782;--purple:#b97be6;background:var(--shell)}
 .dashboardV2 .consoleSidebar{width:228px;flex-basis:228px;background:#0d0d10;border-color:#1c1c21}
 .dashboardV2 .consoleBrand{min-height:68px;padding:15px 16px;border-bottom:1px solid #19191e}
-.dashboardV2 .consoleBrand strong{font-size:13px}.dashboardV2 .consoleBrand small{color:#686873;text-transform:none}
+.dashboardV2 .consoleBrand .brandText{display:flex;flex:1;min-width:0;flex-direction:column;justify-content:center;line-height:1.2}.dashboardV2 .consoleBrand strong{display:block;font-size:13px;white-space:nowrap}.dashboardV2 .consoleBrand small{display:block;margin-top:3px;color:#686873;text-transform:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dashboardV2 .brandLogo{width:34px;height:34px}.dashboardV2 .consoleNav{padding:14px 9px 18px;gap:14px}
 .dashboardV2 .navGroup{gap:3px}.dashboardV2 .navGroupLabel{padding:5px 9px;font-size:8.5px;color:#555560}
 .dashboardV2 .navItem{min-height:36px;padding:7px 9px;border:1px solid transparent;border-radius:8px;color:#90909a;font-size:12.5px;transition:background .15s,border-color .15s,color .15s}

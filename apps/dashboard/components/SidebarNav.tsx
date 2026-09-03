@@ -17,6 +17,8 @@ const groups:NavGroup[]=[
   ]},
   {label:'KNOWLEDGE',items:[
     {name:'Library',href:'/knowledge',permission:'knowledge.view',icon:'≡'},
+    {name:'Server rules',href:'/knowledge/server-rules',permission:'knowledge.view',icon:'§'},
+    {name:'Discord rules',href:'/knowledge/discord-rules',permission:'knowledge.view',icon:'♢'},
     {name:'Knowledge gaps',href:'/knowledge-gaps',permission:'knowledge.gaps.view',icon:'?',badge:'knowledgeGaps'}
   ]},
   {label:'SYSTEM',items:[
