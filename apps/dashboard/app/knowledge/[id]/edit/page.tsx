@@ -3,6 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { api } from '../../../../lib/api';
 import { can, getDashboardAccess } from '../../../../lib/permissions';
 import { deleteKnowledgeAction, updateKnowledgeAction } from '../../actions';
+import ActionButton from '../../../../components/ActionButton';
 
 type Article={id:string;title:string;body:string;content_type:string;category:string;audiences:string[];status:string;source_url:string|null;aliases:string[];related_topics:string[];example_questions:string[]};
 type Settings={content_types:{key:string;label:string;enabled:boolean}[];categories:{key:string;label:string;enabled:boolean}[];audiences:{key:string;label:string;description:string;public_access:boolean;enabled:boolean}[];discord_roles:unknown[]};
@@ -29,7 +30,7 @@ export default async function EditKnowledgePage({params,searchParams}:{params:Pr
       <label className="field fieldFull"><span>Example player questions</span><textarea className="textarea compactTextarea" name="example_questions" rows={7} defaultValue={lines(article.example_questions)}/></label>
       <label className="field fieldWide"><span>Source URL <small>optional</small></span><input className="input" type="url" name="source_url" defaultValue={article.source_url||''}/></label>
       <label className="field fieldFull"><span>Verified information</span><textarea className="textarea" name="body" rows={16} defaultValue={article.body} required/></label>
-    </div><div className="editorFooter"><div><strong>Save changes</strong><span>Updating retrieval helpers will refresh the semantic index.</span></div><button className="button primary largeButton" type="submit">Save article</button></div></form></section>
-    {can(access,'knowledge.delete')?<section className="dangerPanel"><div><strong>Delete article</strong><p>This permanently removes the article from the knowledge base.</p></div><form action={deleteKnowledgeAction}><input type="hidden" name="id" value={article.id}/><input type="hidden" name="confirm_delete" value="DELETE"/><button className="button danger" type="submit">Delete permanently</button></form></section>:null}
+    </div><div className="editorFooter"><div><strong>Save changes</strong><span>Updating retrieval helpers will refresh the semantic index.</span></div><ActionButton label="Save article" pendingLabel="Saving article…" variant="primary" className="largeButton"/></div></form></section>
+    {can(access,'knowledge.delete')?<section className="dangerPanel"><div><strong>Delete article</strong><p>This permanently removes the article from the knowledge base.</p></div><form action={deleteKnowledgeAction}><input type="hidden" name="id" value={article.id}/><input type="hidden" name="confirm_delete" value="DELETE"/><ActionButton label="Delete permanently" pendingLabel="Deleting…" variant="danger" confirmMessage={`Permanently delete "${article.title}" from the knowledge base? This cannot be undone.`}/></form></section>:null}
   </>;
 }

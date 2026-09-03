@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
 import LiveRefresh from '../../components/LiveRefresh';
+import ActionButton from '../../components/ActionButton';
 import { candidateStatusAction, linkCandidateAction } from './actions';
 
 type ReportEvidence = {
@@ -24,6 +25,7 @@ type Candidate = {
 type IssueCategory = { key: string; label: string; description: string; sort_order: number; enabled: boolean };
 type IssueSettings = { categories: IssueCategory[] };
 type Params = Promise<{ q?: string; status?: string; severity?: string; sort?: string; incoming?: string; category?: string }>;
+type Notice={personal:Array<{kind:string;href:string}>};
 
 const severities = ['low','medium','high','critical'];
 function pretty(value: string) { return value.replaceAll('_',' '); }
@@ -36,11 +38,19 @@ export default async function IssuesPage({ searchParams }: { searchParams: Param
   let issues: Issue[] = [];
   let candidates: Candidate[] = [];
   let settings: IssueSettings = { categories: [] };
+  let notice:Notice={personal:[]};
   let loadError = '';
   let access=null;
   try {
     [issues,candidates,settings,access] = await Promise.all([api<Issue[]>('/api/issues'),api<Candidate[]>('/api/issues/candidates'),api<IssueSettings>('/api/issues/settings'),getDashboardAccess()]);
   } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load issue intelligence.'; }
+  try{notice=await api<Notice>('/api/notifications');}catch{}
+  const personalByIssue=new Map<string,'mention'|'reply'>();
+  for(const item of notice.personal){
+    if(item.kind!=='issue_mention'&&item.kind!=='issue_reply')continue;
+    const issueId=item.href.split('/').pop()||'';
+    if(item.kind==='issue_mention'||!personalByIssue.has(issueId))personalByIssue.set(issueId,item.kind==='issue_mention'?'mention':'reply');
+  }
 
   const categories = settings.categories.filter(row => row.enabled || issues.some(issue => issue.category === row.key));
   const categoryName = new Map(categories.map(row => [row.key,row.label]));
@@ -97,9 +107,9 @@ export default async function IssuesPage({ searchParams }: { searchParams: Param
             <div className="incomingSeen">First seen {date(candidate.first_seen)} · Last seen {date(candidate.last_seen)}</div>
             {candidate.recent_samples?.length ? <div className="issueEvidenceBlock"><div className="issueEvidenceHeading"><strong>Recent player examples</strong><span>{candidate.recent_samples.length} preserved</span></div>{candidate.recent_samples.map((sample,index)=>{const jump=discordJump(sample);return <div className="issueEvidenceRow" key={`${candidate.id}-${sample.id||index}`}><div><strong>{sample.author_name||sample.discord_user_id||'Discord user'}</strong><small>{sample.channel_name?`#${sample.channel_name} · `:''}{date(sample.created_at)}</small><p>{sample.report_text}</p></div>{jump?<a className="button subtle" href={jump} target="_blank" rel="noreferrer">Open in Discord</a>:null}</div>})}</div> : null}
             {['detected','reported'].includes(candidate.status)&&can(access,'issues.triage') ? <div className="incomingActions">
-              <form action={linkCandidateAction.bind(null,candidate.id)} className="inlineIssueAction"><select className="input select" name="issue_id" required defaultValue=""><option value="" disabled>Link to existing issue…</option>{linkableIssues.map(issue=><option key={issue.id} value={issue.id}>{issue.public_id||`BUG-${issue.id}`} · {issue.title}</option>)}</select><button className="button" type="submit">Link</button></form>
+              <form action={linkCandidateAction.bind(null,candidate.id)} className="inlineIssueAction"><select className="input select" name="issue_id" required defaultValue=""><option value="" disabled>Link to existing issue…</option>{linkableIssues.map(issue=><option key={issue.id} value={issue.id}>{issue.public_id||`BUG-${issue.id}`} · {issue.title}</option>)}</select><ActionButton label="Link"/></form>
               {can(access,'issues.create')?<Link className="button primary" href={`/issues/create?candidate=${candidate.id}`}>Promote to Known Issue</Link>:null}
-              <form action={candidateStatusAction.bind(null,candidate.id)}><input type="hidden" name="status" value="dismissed"/><button className="button subtle" type="submit">Dismiss</button></form>
+              <form action={candidateStatusAction.bind(null,candidate.id)}><input type="hidden" name="status" value="dismissed"/><ActionButton label="Dismiss" variant="subtle"/></form>
             </div> : <div className="incomingSeen">This incoming report is currently marked <strong>{pretty(candidate.status)}</strong>.</div>}
           </div>
         </details>)}
@@ -117,7 +127,7 @@ export default async function IssuesPage({ searchParams }: { searchParams: Param
         <input type="hidden" name="incoming" value={incoming}/><button className="button" type="submit">Filter</button>
       </form>
       <div className="libraryTableWrap"><table className="libraryTable issueLibraryTable"><thead><tr><th>Issue</th><th>Category / Resource</th><th>Status</th><th>Severity</th><th>Affected</th><th>Updated</th></tr></thead><tbody>
-        {visibleIssues.map(issue=><tr key={issue.id}><td><Link className="articleTitleLink" href={`/issues/${issue.id}`}><strong>{issue.public_id||`BUG-${issue.id}`} · {issue.title}</strong><small>{issue.description||issue.community_summary||'No description yet.'}</small></Link></td><td><span>{categoryName.get(issue.category)||pretty(issue.category)}</span><small className="tableSubtext">{issue.resource_name||'Resource not set'}</small></td><td><span className={`statusBadge status-${issue.status}`}>{pretty(issue.status)}</span></td><td><span className={`statusBadge severity-${issue.severity}`}>{pretty(issue.severity)}</span></td><td><strong>{issue.report_count}</strong></td><td>{date(issue.last_seen||issue.updated_at)}</td></tr>)}
+        {visibleIssues.map(issue=><tr key={issue.id}><td><Link className="articleTitleLink" href={`/issues/${issue.id}`}><strong>{issue.public_id||`BUG-${issue.id}`} · {issue.title}{personalByIssue.has(String(issue.id))?<span className={`personalBadge ${personalByIssue.get(String(issue.id))}`}>{personalByIssue.get(String(issue.id))==='mention'?"you're tagged":'new reply'}</span>:null}</strong><small>{issue.description||issue.community_summary||'No description yet.'}</small></Link></td><td><span>{categoryName.get(issue.category)||pretty(issue.category)}</span><small className="tableSubtext">{issue.resource_name||'Resource not set'}</small></td><td><span className={`statusBadge status-${issue.status}`}>{pretty(issue.status)}</span></td><td><span className={`statusBadge severity-${issue.severity}`}>{pretty(issue.severity)}</span></td><td><strong>{issue.report_count}</strong></td><td>{date(issue.last_seen||issue.updated_at)}</td></tr>)}
         {visibleIssues.length===0?<tr><td colSpan={6}><div className="emptyLibrary"><strong>No known issues found</strong><span>Try changing the filters or create a new known issue.</span></div></td></tr>:null}
       </tbody></table></div>
     </section>

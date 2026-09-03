@@ -5,9 +5,10 @@ import { can,getDashboardAccess } from '../lib/permissions';
 import LiveRefresh from '../components/LiveRefresh';
 
 type Activity={id:number;intent:string;confidence:string;response_text:string|null;created_at:string;channel_name:string|null;author_name:string|null;content:string|null};
+type PersonalKind='ticket_reply'|'ticket_mention'|'issue_reply'|'issue_mention'|'suggestion_reply'|'suggestion_mention';
 type Notice={
   total:number;counts:{tickets:number;issues:number;suggestions:number;knowledgeGaps:number;moderation:number;personal:number};
-  personal:Array<{key:string;title:string;detail:string;href:string;created_at:string}>;
+  personal:Array<{key:string;kind:PersonalKind;title:string;detail:string;href:string;created_at:string}>;
   queues:Array<{key:string;label:string;count:number;href:string}>;
 };
 
@@ -29,7 +30,8 @@ export default async function Home(){
     can(access,'tickets.view')?{label:'Tickets',value:notices.counts.tickets,note:'unclaimed or waiting for you',href:'/tickets',tone:'tickets'}:null,
     can(access,'issues.view')?{label:'Issue reports',value:notices.counts.issues,note:'need triage',href:'/issues',tone:'issues'}:null,
     can(access,'suggestions.view')?{label:'Suggestions',value:notices.counts.suggestions,note:'need review',href:'/suggestions',tone:'suggestions'}:null,
-    can(access,'knowledge.gaps.view')?{label:'Knowledge gaps',value:notices.counts.knowledgeGaps,note:'need an answer',href:'/knowledge-gaps',tone:'gaps'}:null
+    can(access,'knowledge.gaps.view')?{label:'Knowledge gaps',value:notices.counts.knowledgeGaps,note:'need an answer',href:'/knowledge-gaps',tone:'gaps'}:null,
+    can(access,'moderation.view')?{label:'Moderation',value:notices.counts.moderation,note:'cases pending review',href:'/moderation',tone:'tone-bad'}:null
   ].filter(Boolean) as Array<{label:string;value:number;note:string;href:string;tone:string}>;
   const shortcuts=[
     can(access,'tickets.view')?{label:'Open tickets',href:'/tickets'}:null,
@@ -50,7 +52,7 @@ export default async function Home(){
     <div className="homeWorkspace">
       <section className="consolePanel homePriority">
         <div className="compactPanelTitle"><div><h2>Your priority</h2><span>replies, tags, and open queues</span></div></div>
-        {notices.personal.length?<div className="priorityRows">{notices.personal.slice(0,6).map(item=><Link href={item.href} key={item.key}><i/><div><strong>{item.title}</strong><span>{item.detail}</span></div><time>{relative(item.created_at)}</time></Link>)}</div>:notices.queues.length?<div className="priorityRows">{notices.queues.slice(0,6).map(item=><Link href={item.href} key={item.key}><i className={item.key}/><div><strong>{item.label}</strong><span>Open the queue when you’re ready to review it.</span></div><b>{item.count}</b></Link>)}</div>:<div className="calmEmpty"><span>✓</span><div><strong>You’re caught up</strong><p>No assigned replies, direct tags, or open work queues need your attention.</p></div></div>}
+        {notices.personal.length?<div className="priorityRows">{notices.personal.slice(0,6).map(item=><Link href={item.href} key={item.key}><i className={item.kind}/><div><strong>{item.title}</strong><span>{item.detail}</span></div><time>{relative(item.created_at)}</time></Link>)}</div>:notices.queues.length?<div className="priorityRows">{notices.queues.slice(0,6).map(item=><Link href={item.href} key={item.key}><i className={item.key}/><div><strong>{item.label}</strong><span>Open the queue when you’re ready to review it.</span></div><b>{item.count}</b></Link>)}</div>:<div className="calmEmpty"><span>✓</span><div><strong>You’re caught up</strong><p>No assigned replies, direct tags, or open work queues need your attention.</p></div></div>}
       </section>
 
       <aside className="homeSide">

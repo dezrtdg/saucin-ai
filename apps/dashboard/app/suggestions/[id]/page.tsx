@@ -3,6 +3,7 @@ import { notFound,redirect } from 'next/navigation';
 import { api,DashboardApiError } from '../../../lib/api';
 import { can,getDashboardAccess } from '../../../lib/permissions';
 import SuggestionEditForm from '../../../components/SuggestionEditForm';
+import LiveRefresh from '../../../components/LiveRefresh';
 import styles from '../suggestions.module.css';
 
 type Event={
@@ -30,6 +31,7 @@ export default async function SuggestionDetailPage({params}:{params:Params}){
     : null;
 
   return <>
+    <LiveRefresh interval={20000}/>
     <header className="pageHeader"><div><p className="eyebrow">{suggestion.public_id||`SUG-${suggestion.id}`}</p><h1>{suggestion.title}</h1><p>Review the clustered community request, linked discussion, supporting messages, and staff decision.</p></div><div className="headerActions">{discordUrl?<a className="button primary" href={discordUrl} target="_blank" rel="noreferrer">Open Discord discussion ↗</a>:null}<Link className="button" href="/suggestions">Back to Suggestions</Link></div></header>
 
     <div className={styles.detailGrid}>

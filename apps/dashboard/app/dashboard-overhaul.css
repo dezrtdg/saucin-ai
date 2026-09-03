@@ -27,3 +27,15 @@
 @media(max-width:1050px){.attentionCards{grid-template-columns:1fr 1fr}.homeWorkspace{grid-template-columns:1fr}.homeSide{display:grid;grid-template-columns:1fr 1fr}.recentDisclosure{align-self:start}}
 @media(max-width:620px){.attentionCards{grid-template-columns:1fr 1fr}.attentionCard{min-height:74px;padding:11px}.attentionCard strong{font-size:21px}.homeSide{grid-template-columns:1fr}.dashboardHomeHeader .status{display:flex}.calmEmpty{min-height:150px}}
 @media(max-width:410px){.attentionCards{grid-template-columns:1fr}.attentionCard{min-height:64px}}
+
+/* v2.1 — shared personal alerts and action-state polish. */
+@media(min-width:1051px){.attentionCards{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}}
+.notificationSection i.ticket_reply,.notificationSection i.issue_reply,.notificationSection i.suggestion_reply{background:#62c998}
+.notificationSection i.ticket_mention,.notificationSection i.issue_mention,.notificationSection i.suggestion_mention{background:#e7b46b}
+.priorityRows i.ticket_reply,.priorityRows i.issue_reply,.priorityRows i.suggestion_reply{background:#62c998}
+.priorityRows i.ticket_mention,.priorityRows i.issue_mention,.priorityRows i.suggestion_mention{background:#e7b46b}
+.priorityRows i.moderation{background:#e6828c}
+.personalBadge{display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 7px;border-radius:999px;font:600 9.5px ui-monospace,monospace;text-transform:none;letter-spacing:0;vertical-align:middle}
+.personalBadge.mention{background:rgba(231,180,107,.14);color:#e7b46b}.personalBadge.mention::before{content:'@'}
+.personalBadge.reply{background:rgba(98,201,152,.14);color:#7fd9ac}.personalBadge.reply::before{content:'↩';font-size:8.5px}
+.button.isPending{display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:wait;opacity:.9}

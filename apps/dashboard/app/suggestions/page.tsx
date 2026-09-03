@@ -10,6 +10,7 @@ type Suggestion={
   unique_supporters:number;event_count:number;last_seen:string;created_at:string;
 };
 type Params=Promise<{status?:string}>;
+type Notice={personal:Array<{kind:string;href:string}>};
 
 const statuses=['candidate','reviewing','planned','accepted','declined','shipped'] as const;
 function pretty(value:string){return value.replaceAll('_',' ')}
@@ -26,6 +27,14 @@ export default async function SuggestionsPage({searchParams}:{searchParams:Param
   for(const item of all.suggestions) counts.set(item.status,(counts.get(item.status)||0)+1);
   const open=all.suggestions.filter(item=>['candidate','reviewing'].includes(item.status)).length;
   const supported=all.suggestions.reduce((sum,item)=>sum+Number(item.unique_supporters||item.mention_count||0),0);
+  let notice:Notice={personal:[]};
+  try{notice=await api<Notice>('/api/notifications');}catch{}
+  const personalBySuggestion=new Map<string,'mention'|'reply'>();
+  for(const item of notice.personal){
+    if(item.kind!=='suggestion_mention'&&item.kind!=='suggestion_reply')continue;
+    const suggestionId=item.href.split('/').pop()||'';
+    if(item.kind==='suggestion_mention'||!personalBySuggestion.has(suggestionId))personalBySuggestion.set(suggestionId,item.kind==='suggestion_mention'?'mention':'reply');
+  }
 
   return <>
     <LiveRefresh interval={30000}/>
@@ -48,7 +57,7 @@ export default async function SuggestionsPage({searchParams}:{searchParams:Param
       {rows.length?<div>
         <div className={`${styles.row} ${styles.head}`}><span>Suggestion</span><span>Status</span><span>Supporters</span><span>Mentions</span><span>Last seen</span></div>
         {rows.map(item=><Link className={styles.row} href={`/suggestions/${item.id}`} key={item.id}>
-          <div className={styles.title}><strong>{item.public_id||`SUG-${item.id}`} · {item.title}</strong><small>{item.summary}</small></div>
+          <div className={styles.title}><strong>{item.public_id||`SUG-${item.id}`} · {item.title}{personalBySuggestion.has(String(item.id))?<span className={`personalBadge ${personalBySuggestion.get(String(item.id))}`}>{personalBySuggestion.get(String(item.id))==='mention'?"you're tagged":'new reply'}</span>:null}</strong><small>{item.summary}</small></div>
           <span className={`${styles.status} ${styles[item.status as keyof typeof styles]||''}`}>{pretty(item.status)}</span>
           <span className={styles.support}>{Number(item.unique_supporters||item.mention_count||0)}</span>
           <span className={styles.muted}>{item.event_count}</span>

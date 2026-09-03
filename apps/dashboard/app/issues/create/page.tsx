@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
 import { createIssueAction, createIssueWithAiAction, promoteCandidateAction } from '../actions';
+import ActionButton from '../../../components/ActionButton';
 
 type IssueCategory = { key:string; label:string; description?:string; enabled:boolean };
 type IssueSettings = { categories:IssueCategory[] };
@@ -37,7 +38,7 @@ export default async function CreateIssuePage({searchParams}:{searchParams:Param
           {can(access,'issues.status')?<label className="field"><span>Status</span><select className="input select" name="status" defaultValue="new">{statuses.map(v=><option key={v} value={v}>{pretty(v)}</option>)}</select></label>:<input type="hidden" name="status" value="new"/>}
         </div>
         {candidate.related_terms?.length?<div className="tagCloud createCandidateTags">{candidate.related_terms.map(term=><span key={term}>{term}</span>)}</div>:null}
-        <div className="editorFooter"><div><strong>The preserved player report becomes the initial description and symptom evidence.</strong></div><div className="headerActions"><Link className="button" href="/issues">Cancel</Link><button className="button primary largeButton" type="submit">Create Known Issue</button></div></div>
+        <div className="editorFooter"><div><strong>The preserved player report becomes the initial description and symptom evidence.</strong></div><div className="headerActions"><Link className="button" href="/issues">Cancel</Link><ActionButton label="Create Known Issue" pendingLabel="Creating issue…" variant="primary" className="largeButton"/></div></div>
       </form>
     </section>
   </>;
@@ -60,7 +61,7 @@ export default async function CreateIssuePage({searchParams}:{searchParams:Param
           <label className="field"><span>Severity hint <small>optional</small></span><select className="input select" name="severity_hint" defaultValue=""><option value="">Let AI choose conservatively</option>{severities.map(v=><option key={v} value={v}>{pretty(v)}</option>)}</select></label>
         </div>
         <div className="aiSafetyNote"><strong>AI guardrail:</strong> Player-suggested fixes remain community evidence. The official workaround field is only filled if your source explicitly says staff verified it. The new issue starts at <strong>New</strong> status.</div>
-        <div className="editorFooter"><div><strong>AI-assisted known issue</strong><span>Review the created issue afterward; automatic ticket creation follows your existing Issue Settings.</span></div><div className="headerActions"><Link className="button" href="/issues">Cancel</Link><button className="button primary largeButton" type="submit">✨ Analyze & create issue</button></div></div>
+        <div className="editorFooter"><div><strong>AI-assisted known issue</strong><span>Review the created issue afterward; automatic ticket creation follows your existing Issue Settings.</span></div><div className="headerActions"><Link className="button" href="/issues">Cancel</Link><ActionButton label="✨ Analyze & create issue" pendingLabel="Analyzing…" variant="primary" className="largeButton"/></div></div>
       </form>
     </section>:<section className="editorPanel">
       <form action={createIssueAction} className="editorForm">
@@ -78,7 +79,7 @@ export default async function CreateIssuePage({searchParams}:{searchParams:Param
           <label className="field fieldWide"><span>Known log patterns</span><textarea className="textarea compactTextarea codeArea" name="log_patterns" rows={5}/></label>
           <label className="field fieldWide"><span>Staff notes</span><textarea className="textarea compactTextarea" name="staff_notes" rows={5}/></label>
         </div>
-        <div className="editorFooter"><div><strong>Manual known issue</strong><span>You control every field.</span></div><div className="headerActions"><Link className="button" href="/issues">Cancel</Link><button className="button primary largeButton" type="submit">Create Issue</button></div></div>
+        <div className="editorFooter"><div><strong>Manual known issue</strong><span>You control every field.</span></div><div className="headerActions"><Link className="button" href="/issues">Cancel</Link><ActionButton label="Create Issue" pendingLabel="Creating issue…" variant="primary" className="largeButton"/></div></div>
       </form>
     </section>}
   </>;

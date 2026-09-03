@@ -6,7 +6,9 @@ import { useCallback,useEffect,useMemo,useState } from 'react';
 import SidebarNav from './SidebarNav';
 
 type Counts={tickets:number;issues:number;suggestions:number;knowledgeGaps:number;moderation:number;personal:number};
-type PersonalItem={key:string;kind:'ticket_reply'|'ticket_mention';title:string;detail:string;href:string;created_at:string};
+type PersonalKind='ticket_reply'|'ticket_mention'|'issue_reply'|'issue_mention'|'suggestion_reply'|'suggestion_mention';
+type PersonalItem={key:string;kind:PersonalKind;title:string;detail:string;href:string;created_at:string};
+const personalBucket:Record<PersonalKind,keyof Counts>={ticket_reply:'tickets',ticket_mention:'tickets',issue_reply:'issues',issue_mention:'issues',suggestion_reply:'suggestions',suggestion_mention:'suggestions'};
 type QueueItem={key:string;label:string;count:number;href:string};
 type NoticeData={generated_at:string;total:number;counts:Counts;personal:PersonalItem[];queues:QueueItem[]};
 type User={displayName:string;avatar:string|null;initials:string}|null;
@@ -47,12 +49,17 @@ export default function DashboardShell({children,serverName,user,permissions,own
 
   const markRead=useCallback(async(keys:string[])=>{
     if(!keys.length)return;
-    setData(current=>current?{
-      ...current,
-      total:Math.max(0,current.total-keys.length),
-      counts:{...current.counts,tickets:Math.max(0,current.counts.tickets-keys.length),personal:Math.max(0,current.counts.personal-keys.length)},
-      personal:current.personal.filter(item=>!keys.includes(item.key))
-    }:current);
+    setData(current=>{
+      if(!current)return current;
+      const removed=current.personal.filter(item=>keys.includes(item.key));
+      const counts={...current.counts};
+      for(const item of removed){
+        const bucket=personalBucket[item.kind];
+        counts[bucket]=Math.max(0,counts[bucket]-1);
+      }
+      counts.personal=Math.max(0,counts.personal-removed.length);
+      return {...current,total:Math.max(0,current.total-removed.length),counts,personal:current.personal.filter(item=>!keys.includes(item.key))};
+    });
     await fetch('/api/dashboard/notifications',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({keys}),keepalive:true}).catch(()=>undefined);
   },[]);
 

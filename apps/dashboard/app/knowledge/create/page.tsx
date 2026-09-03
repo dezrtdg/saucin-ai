@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
 import { createKnowledgeAction, createKnowledgeWithAiAction } from '../actions';
-import PendingActionButton from '../../../components/PendingActionButton';
+import ActionButton from '../../../components/ActionButton';
 
 type ContentType={key:string;label:string;description:string;enabled:boolean};
 type Category={key:string;label:string;description:string;enabled:boolean};
@@ -56,7 +56,7 @@ export default async function CreateKnowledgePage({searchParams}:{searchParams:P
           <label className="field"><span>Category hint <small>optional</small></span><select className="select input" name="category_hint" defaultValue=""><option value="">Let AI choose</option>{categories.map(row=><option key={row.key} value={row.key}>{row.label}</option>)}</select></label>
         </div>
         <fieldset className="field audienceFieldset"><legend>Audience hints <small>optional</small></legend><div className="audienceChoices">{audiences.map(a=><label className="checkCard" key={a.key}><input type="checkbox" name="audiences" value={a.key} defaultChecked={a.key==='public'}/><span><strong>{a.label}</strong><small>{a.public_access?'Everyone':a.description}</small></span></label>)}</div></fieldset>
-        <div className="editorFooter"><div><strong>Result: Draft</strong><span>Nothing becomes live until you review and publish it.</span></div><PendingActionButton idleLabel="✨ Analyze & build draft" pendingLabel="Building draft…"/></div>
+        <div className="editorFooter"><div><strong>Result: Draft</strong><span>Nothing becomes live until you review and publish it.</span></div><ActionButton label="✨ Analyze & build draft" pendingLabel="Building draft…" variant="primary" className="largeButton"/></div>
       </form>
     </section> : <section className="editorPanel">
       <form action={createKnowledgeAction} className="editorForm">
@@ -74,7 +74,7 @@ export default async function CreateKnowledgePage({searchParams}:{searchParams:P
           <label className="field fieldWide"><span>Source URL <small>optional</small></span><input className="input" type="url" name="source_url"/></label>
           <label className="field fieldFull"><span>Verified information</span><textarea className="textarea" name="body" required minLength={5} rows={14}/></label>
         </div>
-        <div className="editorFooter"><div><strong>Manual article</strong><span>You control every field.</span></div><button className="button primary largeButton" type="submit">Create article</button></div>
+        <div className="editorFooter"><div><strong>Manual article</strong><span>You control every field.</span></div><ActionButton label="Create article" pendingLabel="Creating article…" variant="primary" className="largeButton"/></div>
       </form>
     </section>}
   </>;

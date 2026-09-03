@@ -3,6 +3,7 @@ import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
 import LiveRefresh from '../../components/LiveRefresh';
 import { convertKnowledgeGapAction, reanalyzeKnowledgeGapAction, updateKnowledgeGapAction } from './actions';
+import ActionButton from '../../components/ActionButton';
 
 type Gap = { id:string; normalized_question:string; display_question:string|null; sample_question:string; example_questions:string[]; topic:string|null; occurrences:number; status:string; matched_sources:any[]; first_seen:string; last_seen:string; notes:string; converted_article_id:string|null; conversation_context:string|null; partial_answer:string|null; discord_message_id:string|null };
 type Category = { key:string; label:string; enabled:boolean };
@@ -49,13 +50,13 @@ export default async function KnowledgeGapsPage({searchParams}:{searchParams:Par
               <form action={updateKnowledgeGapAction.bind(null,gap.id)} className="gapReviewForm">
                 <label className="field"><span>Status</span><select className="input select" name="status" defaultValue={gap.status}><option value="open">open</option><option value="reviewed">reviewed</option><option value="resolved">resolved</option><option value="ignored">ignored</option></select></label>
                 <label className="field fieldWide"><span>Staff notes</span><textarea className="textarea compactTextarea" name="notes" rows={4} defaultValue={gap.notes||''} placeholder="Clarification needed, decision made, link to discussion..."/></label>
-                <div className="gapReviewButtons"><button className="button" type="submit">Save gap</button><button className="button" formAction={reanalyzeKnowledgeGapAction.bind(null,gap.id)} type="submit">Clean / re-analyze</button></div>
+                <div className="gapReviewButtons"><ActionButton label="Save gap" variant="primary"/><ActionButton label="Clean / re-analyze" pendingLabel="Re-analyzing…" formAction={reanalyzeKnowledgeGapAction.bind(null,gap.id)}/></div>
               </form>
               {gap.converted_article_id ? <div className="gapConvertForm gapConverted"><div><strong>Draft article created</strong><p>Knowledge article #{gap.converted_article_id} was created from this gap. Open the Knowledge Library to replace the placeholder with verified information before publishing.</p></div>{can(access,'knowledge.view')?<Link className="button primary" href="/knowledge">Open Knowledge</Link>:null}</div> : can(access,'knowledge.create')?<form action={convertKnowledgeGapAction.bind(null,gap.id)} className="gapConvertForm">
                 <div><strong>Create draft knowledge article</strong><p>Copies this question into a draft so you can add the verified answer in the Knowledge Library.</p></div>
                 <label className="field"><span>Category</span><select className="input select" name="category" defaultValue="general">{cats.map(c=><option key={c.key} value={c.key}>{c.label}</option>)}</select></label>
                 <label className="field"><span>Audience</span><select className="input select" name="audience" defaultValue="public">{audiences.map(a=><option key={a.key} value={a.key}>{a.label}</option>)}</select></label>
-                <button className="button primary" type="submit">Create draft</button>
+                <ActionButton label="Create draft" pendingLabel="Creating draft…" variant="primary"/>
               </form>:null}
             </div>:<div className="viewOnlyNote">View only — your role can review this gap but cannot change its status, notes, or create drafts.</div>}
           </div>

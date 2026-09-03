@@ -3,6 +3,7 @@ import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
 import { runDashboardAction } from '../../lib/actionFeedback';
 import ChannelSettingsForm, { type ChannelSaveState } from '../../components/ChannelSettingsForm';
+import ActionButton from '../../components/ActionButton';
 
 const MODES = ['ignored','monitor','questions','issues','suggestions','full'] as const;
 type Mode = typeof MODES[number];
@@ -100,7 +101,7 @@ export default async function ChannelsPage() {
         </div>
         <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',justifyContent:'flex-end'}}>
           {canManage?<form action={syncChannels}>
-            <button className="button" type="submit" disabled={offline}>Refresh Discord Channels</button>
+            <ActionButton label="Refresh Discord Channels" pendingLabel="Refreshing…" disabled={offline}/>
           </form>:null}
           <div className={offline ? 'status offline' : 'status'}><span />{offline ? 'API Offline' : `${channels.length} discovered • ${enabled} enabled`}</div>
         </div>
