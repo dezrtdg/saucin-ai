@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { api } from '../../lib/api';
 import { can,getDashboardAccess } from '../../lib/permissions';
+import LiveRefresh from '../../components/LiveRefresh';
 import styles from './tickets.module.css';
 
 type Ticket={id:number;public_id:string;type_key:string;type_label:string;type_emoji:string|null;subject:string;description:string;status:string;priority:string;opener_name:string|null;opener_user_id:string;claimed_by_name:string|null;message_count:number;punishment_count:number;created_at:string;last_message_at:string|null};
@@ -23,6 +24,7 @@ export default async function TicketsPage({searchParams}:{searchParams:Promise<{
   const counts=new Map<string,number>();for(const ticket of complete.tickets)counts.set(ticket.status,(counts.get(ticket.status)||0)+1);
   const active=complete.tickets.filter(ticket=>['open','claimed','awaiting_user'].includes(ticket.status));
   return <>
+    <LiveRefresh interval={30000}/>
     <header className="pageHeader"><div><p className="eyebrow">PRIVATE SUPPORT</p><h1>Tickets</h1><p>Private support requests, staff routing, evidence, transcripts, and ticket-linked moderation actions.</p></div>{can(access,'settings.tickets.manage')?<Link className="button" href="/settings/tickets">Ticket Settings</Link>:null}</header>
     <div className={styles.stats}><div className={styles.stat}><span>Needs staff</span><strong>{counts.get('open')||0}</strong></div><div className={styles.stat}><span>Claimed</span><strong>{counts.get('claimed')||0}</strong></div><div className={styles.stat}><span>Waiting on user</span><strong>{counts.get('awaiting_user')||0}</strong></div><div className={styles.stat}><span>Active total</span><strong>{active.length}</strong></div></div>
     <div className={styles.filters}><Link className={`${styles.filter} ${!q.status&&!q.type?styles.active:''}`} href="/tickets">All</Link>{statuses.map(status=><Link key={status} className={`${styles.filter} ${q.status===status?styles.active:''}`} href={`/tickets?status=${status}`}>{pretty(status)} · {counts.get(status)||0}</Link>)}</div>

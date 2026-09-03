@@ -10,6 +10,7 @@ import { buildIssueDraft, linkCandidateToIssue, refreshIssueEmbedding, setIssueO
 import { allPermissionKeys, parseDashboardIdentity, permissionCatalog, permissionSnapshot, permissionSystemConfigured, rolePermissionMapForDisplay, saveRolePermissions } from '../services/permissions.js';
 import { clearModerationDiagnostics, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
 import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, releaseTicket, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
+import { getDashboardNotifications, markDashboardNotificationsRead } from '../services/dashboardNotifications.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -23,6 +24,8 @@ function routeRequirement(method: string, route: string): string[] | null {
   const exact: Record<string,string[]> = {
     'GET /api/overview': ['dashboard.view'],
     'GET /api/activity': ['dashboard.view'],
+    'GET /api/notifications': ['dashboard.access'],
+    'POST /api/notifications/read': ['dashboard.access'],
     'GET /api/channels': ['channels.view'],
     'POST /api/channels/sync': ['channels.manage'],
     'PUT /api/channels': ['channels.manage'],
@@ -344,6 +347,20 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     admin.get('/api/permissions/me', async (request) => requestPermissionSnapshot(request));
+
+    admin.get('/api/notifications', async (request) => {
+      const access=await requestPermissionSnapshot(request);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      return getDashboardNotifications({
+        userId:identity.userId||'dashboard',permissions:access.permissions,ownerBypass:access.owner_bypass
+      });
+    });
+
+    admin.post('/api/notifications/read', async (request) => {
+      const body=z.object({keys:z.array(z.string().trim().min(1).max(100)).max(100)}).parse(request.body);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      return {ok:true,marked:await markDashboardNotificationsRead(identity.userId||'dashboard',body.keys)};
+    });
 
     admin.get('/api/permissions/roles', async (request) => {
       const [{ configured, map }, roles, current] = await Promise.all([rolePermissionMapForDisplay(), discordRoles(), requestPermissionSnapshot(request)]);

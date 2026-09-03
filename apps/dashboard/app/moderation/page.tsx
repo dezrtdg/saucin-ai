@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
+import LiveRefresh from '../../components/LiveRefresh';
 import styles from './moderation.module.css';
 
 type Case={id:number;public_id:string;author_name:string|null;discord_user_id:string;rule_title:string;confidence:number|string;status:string;message_content:string;recommended_action:string;delete_message_recommended:boolean;prior_confirmed_count:number;offense_number:number;created_at:string;channel_name:string|null;staff_review_required?:boolean;live_action_status?:string;player_contested_at?:string|null};
@@ -41,6 +42,7 @@ export default async function ModerationPage({searchParams}:{searchParams:Promis
       ? 'Saucin AI creates cases for staff review but does not take player-facing moderation actions. Staff confirmation is required before an Observe case counts.'
       : 'Enable Observe Mode or Live Enforcement in Settings when you are ready.';
   return <>
+    <LiveRefresh interval={30000}/>
     <header className="pageHeader compactPageHeader"><div><p className="eyebrow">{mode==='live'?'LIVE ENFORCEMENT':mode==='observe'?'OBSERVE MODE':'MODERATION'}</p><h1>Moderation</h1><p>Review Discord-rule detections, automated action results, player feedback, and repeat history.</p></div>{can(access,'moderation.configure')?<Link className="button" href="/settings/moderation">Moderation Settings</Link>:null}</header>
     <div className={`${styles.modeBanner} ${mode==='off'?styles.modeOff:''}`}><div><strong>{modeTitle}</strong><p>{modeText}</p></div><span className={styles.observePill}>{mode.toUpperCase()}</span></div>
     <div className={styles.stats}><div className={styles.stat}><span>Pending review</span><strong>{data.stats.pending||0}</strong></div><div className={styles.stat}><span>Active punishments</span><strong>{punishmentData.punishments.filter(p=>p.status==='active').length}</strong></div><div className={styles.stat}><span>Player contested</span><strong>{contested.cases.length||0}</strong></div><div className={styles.stat}><span>Live action issues 24h</span><strong>{live.failed_actions_24h||0}</strong></div></div>

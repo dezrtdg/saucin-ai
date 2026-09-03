@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
+import LiveRefresh from '../../components/LiveRefresh';
 import { candidateStatusAction, linkCandidateAction } from './actions';
 
 type ReportEvidence = {
@@ -72,6 +73,7 @@ export default async function IssuesPage({ searchParams }: { searchParams: Param
   const affected = issues.reduce((sum,row)=>sum+Number(row.report_count||0),0);
 
   return <>
+    <LiveRefresh interval={30000}/>
     <header className="pageHeader compactPageHeader">
       <div><p className="eyebrow">BUG INTELLIGENCE</p><h1>Issues</h1><p>Review incoming reports and monitor known issues. Creation and editing only appear when you explicitly request them.</p></div>
       {(can(access,'settings.issues.manage')||can(access,'issues.create'))?<div className="headerActions">{can(access,'settings.issues.manage')?<Link className="button" href="/settings/issues">Settings</Link>:null}{can(access,'issues.create')?<details className="createDropdown"><summary className="button primary">+ Create</summary><div className="createDropdownMenu">{can(access,'issues.ai')?<Link href="/issues/create?mode=ai"><strong>✨ Create with AI</strong><span>Paste reports, notes, or logs and let Saucin AI structure the known issue.</span></Link>:null}<Link href="/issues/create?mode=manual"><strong>Create manually</strong><span>Fill every known-issue field yourself.</span></Link></div></details>:null}</div>:null}

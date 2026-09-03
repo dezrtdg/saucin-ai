@@ -116,6 +116,10 @@ export default function DashboardActionFeedback(){
       if(!form) return;
       if((form.getAttribute('method')||'').toLowerCase()==='get') return;
       saveView();
+      form.dataset.dashboardPending='true';
+      const submitter=submitEvent.submitter instanceof HTMLElement?submitEvent.submitter:null;
+      const label=submitter?.textContent?.replace(/\s+/g,' ').trim()||'Saving changes';
+      setFeedback({kind:'loading',message:`${label.replace(/…$/,'')}…`});
     };
     document.addEventListener('submit',rememberPosition,true);
     return ()=>document.removeEventListener('submit',rememberPosition,true);

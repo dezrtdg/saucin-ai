@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { api } from '../../lib/api';
 import { can, getDashboardAccess } from '../../lib/permissions';
+import LiveRefresh from '../../components/LiveRefresh';
 import { convertKnowledgeGapAction, reanalyzeKnowledgeGapAction, updateKnowledgeGapAction } from './actions';
 
 type Gap = { id:string; normalized_question:string; display_question:string|null; sample_question:string; example_questions:string[]; topic:string|null; occurrences:number; status:string; matched_sources:any[]; first_seen:string; last_seen:string; notes:string; converted_article_id:string|null; conversation_context:string|null; partial_answer:string|null; discord_message_id:string|null };
@@ -26,6 +27,7 @@ export default async function KnowledgeGapsPage({searchParams}:{searchParams:Par
   const open=gaps.filter(g=>g.status==='open').length; const totalOccurrences=gaps.reduce((sum,g)=>sum+Number(g.occurrences||0),0);
   const cats=settings.categories.filter(c=>c.enabled); const audiences=settings.audiences.filter(a=>a.enabled);
   return <>
+    <LiveRefresh interval={30000}/>
     <header className="pageHeader"><div><p className="eyebrow">KNOWLEDGE IMPROVEMENT</p><h1>Knowledge Gaps</h1><p>Questions Saucin AI could not fully answer from verified information. Use these to systematically fill missing rules and edge cases.</p></div><div className="knowledgeStats"><span><strong>{open}</strong> open</span><span><strong>{gaps.length}</strong> tracked</span><span><strong>{totalOccurrences}</strong> total asks</span></div></header>
     {loadError?<div className="alert error">Could not load knowledge gaps: {loadError}</div>:null}
     <div className="knowledgeSettingsNotice"><div><strong>Nothing here becomes a rule automatically.</strong><p>Saucin AI records the question and related sources, but staff must add verified information before a draft is published.</p></div>{can(access,'knowledge.view')?<Link className="button" href="/knowledge">Knowledge Library</Link>:null}</div>

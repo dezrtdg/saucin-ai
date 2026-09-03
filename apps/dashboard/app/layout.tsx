@@ -1,8 +1,9 @@
 import './globals.css';
 import './action-feedback.css';
+import './dashboard-overhaul.css';
 import { Suspense } from 'react';
 import { getDashboardSession, isDashboardAuthRequired } from '../lib/auth';
-import SidebarNav from '../components/SidebarNav';
+import DashboardShell from '../components/DashboardShell';
 import DashboardActionFeedback from '../components/DashboardActionFeedback';
 import { can, getDashboardAccess } from '../lib/permissions';
 
@@ -22,22 +23,9 @@ export default async function RootLayout({ children }: Readonly<{children:React.
   const initials=session?.displayName.split(/\s+/).map(v=>v[0]).join('').slice(0,2).toUpperCase()||'SA';
   const permissions=access?.permissions||[];
   const ownerBypass=Boolean(access?.owner_bypass);
+  const serverName=process.env.SERVER_NAME||'Saucin RP';
   return <html lang="en"><body>
     <Suspense fallback={null}><DashboardActionFeedback/></Suspense>
-    <div className="consoleShell">
-      <aside className="consoleSidebar">
-        <div className="consoleBrand"><img className="brandLogo" src="/saucin-rp-logo.png" alt="Saucin RP"/><div><strong>Saucin AI</strong><small>{process.env.SERVER_NAME||'Saucin RP'} console</small></div></div>
-        <Suspense fallback={<div className="navLoading">Loading navigation…</div>}><SidebarNav permissions={permissions} ownerBypass={ownerBypass}/></Suspense>
-        <div className="sidebarStatus"><span className="onlineDot"/><div><strong>Online</strong><small>Discord + API</small></div></div>
-      </aside>
-      <main className="consoleMain">
-        <header className="consoleTopbar">
-          <div className="topbarIdentity"><strong>{process.env.SERVER_NAME||'Saucin RP'}</strong><small>operations & intelligence</small></div>
-          {can(access,'knowledge.view')?<form className="topbarSearch" action="/knowledge/all" method="get"><span>⌕</span><input name="q" aria-label="Search all knowledge" placeholder="Search all knowledge"/><kbd>/</kbd></form>:<div className="topbarSpacer"/>}
-          {session?<div className="topbarUser">{session.avatar?<img src={session.avatar} alt=""/>:<div className="topbarAvatar">{initials}</div>}<div><strong>{session.displayName}</strong><a href="/api/auth/logout">Sign out</a></div></div>:null}
-        </header>
-        <div className="consoleContent">{children}</div>
-      </main>
-    </div>
+    <DashboardShell serverName={serverName} user={session?{displayName:session.displayName,avatar:session.avatar,initials}:null} permissions={permissions} ownerBypass={ownerBypass} knowledgeSearch={can(access,'knowledge.view')}>{children}</DashboardShell>
   </body></html>;
 }

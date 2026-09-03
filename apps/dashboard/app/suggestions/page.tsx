@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { api } from '../../lib/api';
 import { can,getDashboardAccess } from '../../lib/permissions';
+import LiveRefresh from '../../components/LiveRefresh';
 import styles from './suggestions.module.css';
 
 type Suggestion={
@@ -27,6 +28,7 @@ export default async function SuggestionsPage({searchParams}:{searchParams:Param
   const supported=all.suggestions.reduce((sum,item)=>sum+Number(item.unique_supporters||item.mention_count||0),0);
 
   return <>
+    <LiveRefresh interval={30000}/>
     <header className="pageHeader"><div><p className="eyebrow">COMMUNITY INTELLIGENCE</p><h1>Suggestions</h1><p>Community ideas detected from Discord are clustered so repeated requests build support instead of creating duplicate entries.</p></div>{can(access,'suggestions.manage')?<Link className="button primary" href="/suggestions/create">Create suggestion</Link>:null}</header>
 
     <div className="cards">
