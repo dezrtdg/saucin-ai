@@ -12,7 +12,7 @@ type Suggestion={
 type Params=Promise<{status?:string}>;
 type Notice={personal:Array<{kind:string;href:string}>};
 
-const statuses=['candidate','reviewing','planned','accepted','declined','shipped'] as const;
+const statuses=['candidate','reviewing','planned','accepted','testing','declined','shipped'] as const;
 function pretty(value:string){return value.replaceAll('_',' ')}
 
 export default async function SuggestionsPage({searchParams}:{searchParams:Params}){

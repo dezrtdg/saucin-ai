@@ -28,7 +28,8 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'suggestions.view', label: 'View suggestions', description: 'View clustered community suggestions, support counts, source messages, and status.' },
     { key: 'suggestions.manage', label: 'Manage suggestions', description: 'Create, edit, triage, annotate, and change the status of community suggestions.' },
     { key: 'suggestions.ai', label: 'Use Suggestions AI', description: 'Create or expand suggestion drafts with AI while preserving the original community submission.' },
-    { key: 'suggestions.forum', label: 'Manage suggestion discussions', description: 'Create and synchronize linked Discord forum discussions.' }
+    { key: 'suggestions.forum', label: 'Manage suggestion discussions', description: 'Create, synchronize, and post staff updates to linked Discord forum discussions.' },
+    { key: 'suggestions.delete', label: 'Delete suggestions', description: 'Permanently delete suggestions and their linked Discord forum posts.' }
   ]},
   { key: 'tickets', label: 'Private Tickets', permissions: [
     { key: 'tickets.view', label: 'View tickets', description: 'View private ticket details, participants, messages, and status.' },
@@ -93,7 +94,7 @@ const implications: Record<string, string[]> = {
   'settings.suggestions.manage': ['settings.view','suggestions.view'],
   'settings.permissions.manage': ['settings.view'],
   'suggestions.manage': ['suggestions.view','suggestions.ai','suggestions.forum'],
-  'suggestions.ai': ['suggestions.view'], 'suggestions.forum': ['suggestions.view'],
+  'suggestions.ai': ['suggestions.view'], 'suggestions.forum': ['suggestions.view'], 'suggestions.delete': ['suggestions.view'],
   'tickets.manage': ['tickets.view'], 'tickets.close': ['tickets.view'], 'tickets.transcripts': ['tickets.view'],
   'settings.tickets.manage': ['settings.view','tickets.view'],
   'moderation.review': ['moderation.view'], 'moderation.actions': ['moderation.view'], 'moderation.punish': ['moderation.view','tickets.view'],

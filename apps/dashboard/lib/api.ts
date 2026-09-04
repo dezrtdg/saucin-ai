@@ -20,7 +20,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'x-api-key': key,
-      ...(session ? { 'x-dashboard-user-id': session.userId, 'x-dashboard-role-ids': session.roles.join(',') } : {}),
+      ...(session ? { 'x-dashboard-user-id': session.userId, 'x-dashboard-role-ids': session.roles.join(','), 'x-dashboard-display-name': session.displayName } : {}),
       ...(ownerAllowlisted ? { 'x-dashboard-owner-allowlisted': '1' } : {}),
       ...(init?.body ? { 'content-type': 'application/json' } : {}),
       ...(init?.headers || {})

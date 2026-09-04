@@ -87,11 +87,11 @@ export default function SuggestionEditForm({suggestion}:Props){
     }finally{clearTimeout(timer);}
   }
 
-  return <form className="knowledgeForm" onSubmit={submit} onChange={()=>{if(state==='saved')setState('idle')}}>
+  return <form className="knowledgeForm" onSubmit={submit} onChange={()=>{if(state==='saved')setState('idle')}} data-dashboard-managed-state="true">
     <div className="formGrid">
       <label className="field fieldWide"><span>Title</span><input className="input" name="title" value={title} onChange={event=>setTitle(event.target.value)} required maxLength={180}/></label>
       <label className="field"><span>Status</span><select className="input select" name="status" value={status} onChange={event=>setStatus(event.target.value)}>
-        <option value="candidate">Candidate</option><option value="reviewing">Reviewing</option><option value="planned">Planned</option><option value="accepted">Accepted</option><option value="declined">Declined</option><option value="shipped">Shipped</option>
+        <option value="candidate">Candidate</option><option value="reviewing">Reviewing</option><option value="planned">Planned</option><option value="accepted">Accepted</option><option value="testing">Testing</option><option value="declined">Declined</option><option value="shipped">Shipped</option>
       </select></label>
       <label className="field"><span>Category</span><input className="input" name="category" value={category} onChange={event=>setCategory(event.target.value)} maxLength={100}/></label>
       <label className="field fieldFull"><span>Community suggestion summary</span><textarea className="textarea" name="summary" rows={8} value={summary} onChange={event=>setSummary(event.target.value)} required maxLength={6000}/><small>This clean draft can be edited without losing the original community messages below.</small></label>
@@ -103,6 +103,6 @@ export default function SuggestionEditForm({suggestion}:Props){
         <button className="button" type="button" onClick={syncForum} disabled={state==='drafting'||state==='saving'||state==='syncing'}>{state==='syncing'?'Syncing Discord…':threadId?'Sync Discord discussion':'Create Discord discussion'}</button>
       </div></div>
     </div>
-    <div className="formActions"><div>{state==='saved'?<span className="formSuccess">✓ {message}</span>:state==='error'?<span className="formError">{message}</span>:message?<span className="formSuccess">✓ {message}</span>:<p>Status changes are posted to this suggestion’s linked Discord discussion.</p>}</div><button className={`button primary${state==='saved'?' isSaved':''}`} type="submit" disabled={state==='saving'||state==='drafting'||state==='syncing'}>{state==='saving'?'Saving suggestion…':state==='saved'?'Saved ✓':'Save suggestion'}</button></div>
+    <div className="formActions"><div>{state==='saved'?<span className="formSuccess">✓ {message}</span>:state==='error'?<span className="formError">{message}</span>:message?<span className="formSuccess">✓ {message}</span>:<p>Status changes update the forum post and add only a short status line to the discussion.</p>}</div><button className={`button primary${state==='saved'?' isSaved':''}`} type="submit" disabled={state==='saving'||state==='drafting'||state==='syncing'}>{state==='saving'?'Saving suggestion…':state==='saved'?'Saved ✓':'Save suggestion'}</button></div>
   </form>;
 }

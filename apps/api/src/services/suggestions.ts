@@ -101,6 +101,33 @@ GROUNDING RULES:
   };
 }
 
+export async function buildSuggestionStaffReply(input:{suggestionId:number;staffDraft:string}){
+  const staffDraft=String(input.staffDraft||'').trim();
+  if(staffDraft.length<3) throw new Error('Write a brief update for Saucin AI to help polish.');
+  if(!client||!env.AI_ENABLED) throw new Error('AI reply help is unavailable because AI is disabled or no OpenAI API key is configured.');
+  const suggestion=await getSuggestion(input.suggestionId);
+  if(!suggestion) throw new Error('Suggestion not found.');
+
+  const response=await client.responses.create({
+    model:env.AI_REPLY_MODEL,
+    reasoning:{effort:'low'},
+    instructions:`Polish a staff-written Discord update for a community suggestion on ${env.SERVER_NAME}.
+Return only the finished reply text with no JSON, code fence, title, or preamble.
+
+RULES:
+- The staff draft is the authority. Preserve its meaning and do not invent progress, features, promises, dates, decisions, or technical facts.
+- Keep it clear, friendly, and concise: normally one to three short paragraphs.
+- Give it a light Saucin personality when natural, but do not make it gimmicky.
+- Do not repeat the full suggestion description. This is an update inside its existing discussion.
+- Do not include role or user mentions.`,
+    input:`SUGGESTION: ${suggestion.public_id||`SUG-${suggestion.id}`} · ${suggestion.title}\nCURRENT STATUS: ${suggestion.status}\nSTAFF DRAFT:\n${staffDraft.slice(0,4000)}`,
+    max_output_tokens:600
+  });
+  const reply=response.output_text.trim().replace(/^```(?:text|markdown)?\s*/i,'').replace(/\s*```$/,'').slice(0,1700);
+  if(!reply) throw new Error('AI did not return a usable suggestion update.');
+  return reply;
+}
+
 async function createEmbedding(input:string):Promise<number[]|null>{
   if(!client || !env.AI_ENABLED || !input.trim()) return null;
   try{
@@ -456,7 +483,17 @@ export async function getSuggestion(id:number){
            ORDER BY se.created_at DESC
            LIMIT 100
         ) e
-      ),'[]'::jsonb) AS events
+      ),'[]'::jsonb) AS events,
+      COALESCE((
+        SELECT jsonb_agg(u ORDER BY u.created_at DESC)
+        FROM (
+          SELECT su.id,su.update_type,su.from_value,su.to_value,su.note,su.created_by,su.created_at
+            FROM suggestion_updates su
+           WHERE su.suggestion_id=s.id
+           ORDER BY su.created_at DESC
+           LIMIT 100
+        ) u
+      ),'[]'::jsonb) AS updates
     FROM suggestions s WHERE s.id=$1`,[id]);
   return result.rows[0]??null;
 }
@@ -509,7 +546,7 @@ export async function listSuggestions(input?:{status?:string;limit?:number}){
     FROM suggestions s
     ${where.length?`WHERE ${where.join(' AND ')}`:''}
     ORDER BY
-      CASE s.status WHEN 'candidate' THEN 1 WHEN 'reviewing' THEN 2 WHEN 'planned' THEN 3 WHEN 'accepted' THEN 4 WHEN 'shipped' THEN 5 ELSE 6 END,
+      CASE s.status WHEN 'candidate' THEN 1 WHEN 'reviewing' THEN 2 WHEN 'planned' THEN 3 WHEN 'accepted' THEN 4 WHEN 'testing' THEN 5 WHEN 'shipped' THEN 6 ELSE 7 END,
       s.mention_count DESC,s.last_seen DESC
     LIMIT $${params.length}`,params);
   return result.rows;

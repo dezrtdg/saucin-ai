@@ -21,3 +21,20 @@ export async function PUT(request:Request,context:{params:Promise<{id:string}>})
     return NextResponse.json({error:error instanceof Error?error.message:'Unable to save suggestion.'},{status:500});
   }
 }
+
+export async function DELETE(_request:Request,context:{params:Promise<{id:string}>}){
+  const {id}=await context.params;
+  if(!/^\d+$/.test(id)) return NextResponse.json({error:'Invalid suggestion ID.'},{status:400});
+  try{
+    const result=await api(`/api/suggestions/${id}`,{
+      method:'DELETE',
+      signal:AbortSignal.timeout(20000)
+    });
+    return NextResponse.json(result);
+  }catch(error){
+    if(error instanceof DashboardApiError) return NextResponse.json({error:error.message},{status:error.status});
+    const name=error instanceof Error?error.name:'';
+    if(name==='TimeoutError'||name==='AbortError') return NextResponse.json({error:'The suggestion deletion did not finish within 20 seconds.'},{status:504});
+    return NextResponse.json({error:error instanceof Error?error.message:'Unable to delete suggestion.'},{status:500});
+  }
+}

@@ -220,3 +220,4 @@ html,body{background:var(--bg);font-family:"IBM Plex Sans",Inter,ui-sans-serif,s
   -ms-overflow-style:none;
 }
 .consoleNav::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}
+.suggestionReplyComposer{padding:20px 22px}.suggestionReplyActions>div:last-child{display:flex;flex-direction:row;align-items:center;gap:8px}@media(max-width:700px){.suggestionReplyActions{align-items:flex-start;flex-direction:column}.suggestionReplyActions>div:last-child{width:100%;align-items:stretch;flex-direction:column}.suggestionReplyActions button{width:100%}}

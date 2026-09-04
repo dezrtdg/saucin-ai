@@ -3,15 +3,18 @@ import { z } from 'zod';
 import { db } from '../db.js';
 import { env } from '../env.js';
 import {
+  deleteSuggestionDiscordPost,
   ensureSuggestionDiscordThread,
   getCachedDiscordChannelMetadata,
   getCachedDiscordForumTags,
+  postSuggestionStaffUpdate,
   postSuggestionStatusUpdate,
   syncSuggestionDiscordPost
 } from '../discord/client.js';
 import { allPermissionKeys,parseDashboardIdentity,permissionSnapshot } from '../services/permissions.js';
 import {
   buildSuggestionDraft,
+  buildSuggestionStaffReply,
   createManualSuggestion,
   getSuggestion,
   listSuggestions,
@@ -40,7 +43,15 @@ function actorId(request:FastifyRequest){
   return parseDashboardIdentity(request.headers as Record<string,unknown>).userId||null;
 }
 
-const status=z.enum(['candidate','reviewing','planned','accepted','declined','shipped']);
+function actorLabel(request:FastifyRequest){
+  const id=actorId(request);
+  const displayName=typeof request.headers['x-dashboard-display-name']==='string'
+    ? request.headers['x-dashboard-display-name'].trim().slice(0,100)
+    : '';
+  return displayName?(id?`${displayName} (${id})`:displayName):id;
+}
+
+const status=z.enum(['candidate','reviewing','planned','accepted','testing','declined','shipped']);
 const suggestionBody=z.object({
   title:z.string().trim().min(3).max(180),
   summary:z.string().trim().min(3).max(6000),
@@ -171,6 +182,45 @@ export async function suggestionRoutes(app:FastifyInstance){
     return suggestion;
   });
 
+  app.post('/api/suggestions/:id/reply/ai-draft',async(request,reply)=>{
+    if(!await requirePermission(request,reply,'suggestions.ai')) return;
+    const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+    const body=z.object({draft:z.string().trim().min(3).max(4000)}).parse(request.body);
+    try{
+      return {reply:await buildSuggestionStaffReply({suggestionId:params.id,staffDraft:body.draft})};
+    }catch(error){
+      request.log.warn({error},'suggestion staff reply drafting failed');
+      const message=error instanceof Error?error.message:'Unable to draft the suggestion update.';
+      return reply.code(message==='Suggestion not found.'?404:503).send({error:message});
+    }
+  });
+
+  app.post('/api/suggestions/:id/reply',async(request,reply)=>{
+    if(!await requirePermission(request,reply,'suggestions.forum')) return;
+    const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+    const body=z.object({content:z.string().trim().min(1).max(1700)}).parse(request.body);
+    try{
+      return await postSuggestionStaffUpdate(params.id,body.content,actorLabel(request));
+    }catch(error){
+      const message=error instanceof Error?error.message:'Unable to post the suggestion update.';
+      return reply.code(message==='Suggestion not found.'?404:409).send({error:message});
+    }
+  });
+
+  app.delete('/api/suggestions/:id',async(request,reply)=>{
+    if(!await requirePermission(request,reply,'suggestions.delete')) return;
+    const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
+    const suggestion=await getSuggestion(params.id);
+    if(!suggestion) return reply.code(404).send({error:'suggestion not found'});
+    try{
+      await deleteSuggestionDiscordPost(params.id);
+    }catch(error){
+      return reply.code(409).send({error:error instanceof Error?error.message:'Unable to delete the linked Discord post.'});
+    }
+    const deleted=await db.query('DELETE FROM suggestions WHERE id=$1 RETURNING id,public_id,title',[params.id]);
+    return {ok:true,deleted:deleted.rows[0]};
+  });
+
   app.put('/api/suggestions/:id',async(request,reply)=>{
     if(!await requirePermission(request,reply,'suggestions.manage')) return;
     const params=z.object({id:z.coerce.number().int().positive()}).parse(request.params);
@@ -180,7 +230,7 @@ export async function suggestionRoutes(app:FastifyInstance){
     }).omit({source_text:true}).parse(request.body);
     const before=await getSuggestion(params.id);
     if(!before) return reply.code(404).send({error:'suggestion not found'});
-    const suggestion=await updateSuggestion(params.id,{...body,staff_notes:body.staff_notes||'',changed_by:actorId(request)});
+    const suggestion=await updateSuggestion(params.id,{...body,staff_notes:body.staff_notes||'',changed_by:actorLabel(request)});
     if(!suggestion) return reply.code(404).send({error:'suggestion not found'});
     await ensureSuggestionDiscordThread(params.id).catch(error=>request.log.warn({error},'suggestion forum creation failed'));
     await syncSuggestionDiscordPost(params.id).catch(error=>request.log.warn({error},'suggestion forum synchronization failed'));

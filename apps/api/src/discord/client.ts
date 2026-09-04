@@ -315,6 +315,7 @@ const suggestionStatusTags:Record<string,string[]>={
   reviewing:['under review','reviewing','review'],
   accepted:['accepted','approved'],
   planned:['planned','roadmap'],
+  testing:['testing','in testing','qa','quality assurance'],
   shipped:['released','shipped','live'],
   declined:['declined','not planned'],
   duplicate:['duplicate']
@@ -825,13 +826,49 @@ export async function postSuggestionStatusUpdate(suggestionId:number,fromStatus:
   if(!settings.post_status_updates_to_thread) return false;
   const channel=await discord.channels.fetch(String(suggestion.discord_thread_id)).catch(()=>null);
   if(!channel||!channel.isTextBased()||channel.isDMBased()) return false;
+  const label=(value:string)=>{
+    const normalized=value.replaceAll('_',' ');
+    return normalized.charAt(0).toUpperCase()+normalized.slice(1);
+  };
   await (channel as any).send({
-    content:`**Suggestion status updated:** ${fromStatus.replaceAll('_',' ')} → **${toStatus.replaceAll('_',' ')}**\n\n${await getSuggestionPublicMessage(suggestion)}`,
-    components:suggestionButtons(suggestionId,suggestion.discord_thread_id),
+    content:`🌶️ **Status updated:** ${label(fromStatus)} → **${label(toStatus)}**`,
     allowedMentions:{parse:[]}
   });
-  await syncSuggestionDiscordPost(suggestionId).catch(()=>false);
   return true;
+}
+
+export async function postSuggestionStaffUpdate(suggestionId:number,content:string,createdBy?:string|null){
+  const suggestion=await getSuggestion(suggestionId);
+  if(!suggestion) throw new Error('Suggestion not found.');
+  if(!suggestion.discord_thread_id) throw new Error('Create the Discord discussion before posting an update.');
+  if(!discord.isReady()) throw new Error('Discord is not connected right now. Try again shortly.');
+  const channel=await discord.channels.fetch(String(suggestion.discord_thread_id)).catch(()=>null);
+  if(!channel||!channel.isTextBased()||channel.isDMBased()) throw new Error('The linked Discord discussion could not be found.');
+  const clean=String(content||'').trim().slice(0,1700);
+  if(!clean) throw new Error('Write an update before posting it.');
+  const publicId=suggestion.public_id||`SUG-${String(suggestion.id).padStart(4,'0')}`;
+  const message=await (channel as any).send({
+    content:`🌶️ **Staff update · ${publicId}**\n\n${clean}`,
+    allowedMentions:{parse:[]}
+  });
+  await db.query(`
+    INSERT INTO suggestion_updates (suggestion_id,update_type,to_value,note,created_by)
+    VALUES ($1,'staff_reply',$2,$3,$4)`,[
+      suggestionId,String(message.id),clean,createdBy||null
+    ]);
+  return {ok:true,thread_id:String(suggestion.discord_thread_id),message_id:String(message.id)};
+}
+
+export async function deleteSuggestionDiscordPost(suggestionId:number){
+  const suggestion=await getSuggestion(suggestionId);
+  if(!suggestion) throw new Error('Suggestion not found.');
+  if(!suggestion.discord_thread_id) return {deleted:false,missing:true};
+  if(!discord.isReady()) throw new Error('Discord is not connected, so the linked forum post could not be deleted.');
+  const thread=await discord.channels.fetch(String(suggestion.discord_thread_id)).catch(()=>null) as any;
+  if(!thread) return {deleted:false,missing:true};
+  if(typeof thread.delete!=='function') throw new Error('The linked Discord destination is not a deletable forum post.');
+  await thread.delete(`Dashboard deletion of ${suggestion.public_id||`SUG-${suggestion.id}`}`);
+  return {deleted:true,missing:false};
 }
 
 function ticketPanelComponents(types:Awaited<ReturnType<typeof listTicketTypes>>){
