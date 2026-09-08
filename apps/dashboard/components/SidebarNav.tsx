@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-type BadgeKey='tickets'|'issues'|'suggestions'|'knowledgeGaps'|'moderation'|'txadmin';
+type BadgeKey='automation'|'tickets'|'issues'|'suggestions'|'knowledgeGaps'|'moderation'|'txadmin';
 type NavItem={name:string;href:string;permission?:string;icon:string;badge?:BadgeKey};
 type NavGroup={label:string;items:NavItem[]};
 
 const groups:NavGroup[]=[
   {label:'WORKSPACE',items:[
     {name:'Overview',href:'/',permission:'dashboard.view',icon:'⌂'},
+    {name:'Automation',href:'/automation',permission:'automation.view',icon:'◎',badge:'automation'},
     {name:'Tickets',href:'/tickets',permission:'tickets.view',icon:'▣',badge:'tickets'},
     {name:'Issues',href:'/issues',permission:'issues.view',icon:'!',badge:'issues'},
     {name:'Suggestions',href:'/suggestions',permission:'suggestions.view',icon:'◇',badge:'suggestions'},

@@ -13,6 +13,11 @@ export const permissionCatalog: PermissionGroup[] = [
     { key: 'dashboard.access', label: 'Dashboard access', description: 'Sign in and access the staff dashboard.' },
     { key: 'dashboard.view', label: 'View overview', description: 'View dashboard statistics, activity, and attention queues.' }
   ]},
+  { key: 'automation', label: 'Automation Center', permissions: [
+    { key: 'automation.view', label: 'View Automation Center', description: 'View the unified staff review inbox, module authority, and automation explanations.' },
+    { key: 'automation.review', label: 'Review automation', description: 'Mark work reviewed and confirm or correct Saucin AI decisions.' },
+    { key: 'automation.manage', label: 'Manage automation authority', description: 'Change the approved automation ceiling for each module.' }
+  ]},
   { key: 'issues', label: 'Issues', permissions: [
     { key: 'issues.view', label: 'View issues', description: 'View incoming reports, known issues, evidence, and status.' },
     { key: 'issues.create', label: 'Create known issues', description: 'Create and promote known issues.' },
@@ -84,6 +89,7 @@ const validPermissionKeys = new Set(allPermissionKeys);
 
 const implications: Record<string, string[]> = {
   'dashboard.view': ['dashboard.access'],
+  'automation.view': ['dashboard.access'], 'automation.review': ['automation.view'], 'automation.manage': ['automation.view','settings.view'],
   'issues.create': ['issues.view'], 'issues.ai': ['issues.view'], 'issues.edit': ['issues.view'], 'issues.status': ['issues.view'],
   'issues.triage': ['issues.view'], 'issues.verify': ['issues.view'], 'issues.ticket': ['issues.view'], 'issues.delete': ['issues.view'],
   'knowledge.create': ['knowledge.view'], 'knowledge.ai': ['knowledge.view'], 'knowledge.edit': ['knowledge.view'],

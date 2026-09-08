@@ -207,12 +207,15 @@ export async function ingestTxAdminBatch(input:TxAdminIngestInput){
   const client=await db.connect();
   let accepted=0;let deduplicated=0;let matched=0;let drafts=0;let suppressed=0;
   let settings:TxAdminSettings=normalizedSettings(null);
+  let automationLevel='auto_safe';
   const alerts:TxAdminAlert[]=[];
   const actionableEventIds=new Set<number>();
   try{
     await client.query('BEGIN');
     const settingsResult=await client.query('SELECT * FROM txadmin_settings WHERE id=1');
     settings=normalizedSettings(settingsResult.rows[0]);
+    const automationResult=await client.query(`SELECT autonomy_level FROM automation_module_settings WHERE module_key='txadmin'`);
+    automationLevel=String(automationResult.rows[0]?.autonomy_level||'auto_safe');
     await client.query(`
       INSERT INTO txadmin_collectors
         (collector_id,server_name,hostname,txdata_path,collector_version,last_heartbeat_at,metadata,updated_at)
@@ -285,7 +288,7 @@ export async function ingestTxAdminBatch(input:TxAdminIngestInput){
       }
       if(Boolean(eventRow.actionable))actionableEventIds.add(Number(eventRow.id));
 
-      const draft=await createRecurringDraft(client,{settings,eventId:Number(eventRow.id),event,message,resourceName,
+      const draft=!['assist','auto_safe'].includes(automationLevel)?null:await createRecurringDraft(client,{settings,eventId:Number(eventRow.id),event,message,resourceName,
         fingerprint,repeatCount:Number(eventRow.repeat_count||1),matchedIssueId:eventRow.matched_issue_id?Number(eventRow.matched_issue_id):matchedIssueId,
         suppressed:isSuppressed,actionable:Boolean(eventRow.actionable)});
       if(draft&&eventRow.issue_candidate_id==null)drafts++;
@@ -300,11 +303,11 @@ export async function ingestTxAdminBatch(input:TxAdminIngestInput){
   }catch(error){
     await client.query('ROLLBACK');throw error;
   }finally{client.release();}
-  if(settings.auto_link_issue_reports){
+  if(settings.auto_link_issue_reports&&automationLevel==='auto_safe'){
     for(const eventId of actionableEventIds)await correlateTxAdminEvent(eventId,settings.correlation_min_confidence)
       .catch(error=>console.warn('[txadmin] issue correlation failed',error));
   }
-  await dispatchTxAdminAlerts(alerts,settings);
+  if(['assist','auto_safe'].includes(automationLevel))await dispatchTxAdminAlerts(alerts,settings);
   return {ok:true,accepted,deduplicated,matched_issues:matched,drafts_created:drafts,suppressed,heartbeat_at:new Date().toISOString()};
 }
 
@@ -374,9 +377,10 @@ async function saveIssueEventLink(issueId:number,eventId:number,match:{score:num
 }
 
 export async function correlateIssueWithTxAdmin(issueId:number,minConfidence?:number){
-  const [issueResult,settingsResult,eventsResult]=await Promise.all([
+  const [issueResult,settingsResult,automationResult,eventsResult]=await Promise.all([
     db.query(`SELECT id,title,description,category,resource_name,aliases,symptoms,log_patterns FROM issues WHERE id=$1`,[issueId]),
     db.query(`SELECT auto_link_issue_reports,correlation_min_confidence FROM txadmin_settings WHERE id=1`),
+    db.query(`SELECT autonomy_level FROM automation_module_settings WHERE module_key='txadmin'`),
     db.query(`SELECT id,event_type,category,resource_name,message,last_seen_at,attention_kind
                 FROM service_events
                WHERE source='txadmin' AND actionable=TRUE AND attention_kind<>'update_available'
@@ -386,7 +390,7 @@ export async function correlateIssueWithTxAdmin(issueId:number,minConfidence?:nu
   ]);
   if(!issueResult.rowCount)return {linked:0};
   const setting=settingsResult.rows[0]||{};
-  if(setting.auto_link_issue_reports===false)return {linked:0};
+  if(setting.auto_link_issue_reports===false||automationResult.rows[0]?.autonomy_level!=='auto_safe')return {linked:0};
   const threshold=Math.min(.95,Math.max(.4,Number(minConfidence??setting.correlation_min_confidence??.55)));
   const scored=eventsResult.rows.map(event=>({event,match:scoreIssueEvent(issueResult.rows[0],event)}))
     .filter(item=>item.match.score>=threshold).sort((a,b)=>b.match.score-a.match.score).slice(0,12);
@@ -395,15 +399,16 @@ export async function correlateIssueWithTxAdmin(issueId:number,minConfidence?:nu
 }
 
 export async function correlateTxAdminEvent(eventId:number,minConfidence?:number){
-  const [eventResult,settingsResult,issuesResult]=await Promise.all([
+  const [eventResult,settingsResult,automationResult,issuesResult]=await Promise.all([
     db.query(`SELECT id,event_type,category,resource_name,message,last_seen_at,attention_kind,actionable,matched_issue_id
                 FROM service_events WHERE id=$1 AND source='txadmin'`,[eventId]),
     db.query(`SELECT auto_link_issue_reports,correlation_min_confidence FROM txadmin_settings WHERE id=1`),
+    db.query(`SELECT autonomy_level FROM automation_module_settings WHERE module_key='txadmin'`),
     db.query(`SELECT id,title,description,category,resource_name,aliases,symptoms,log_patterns
                 FROM issues WHERE status NOT IN ('resolved','wont_fix') ORDER BY last_seen DESC LIMIT 400`)
   ]);
   const event=eventResult.rows[0];const setting=settingsResult.rows[0]||{};
-  if(!event||!event.actionable||event.attention_kind==='update_available'||setting.auto_link_issue_reports===false)return null;
+  if(!event||!event.actionable||event.attention_kind==='update_available'||setting.auto_link_issue_reports===false||automationResult.rows[0]?.autonomy_level!=='auto_safe')return null;
   if(event.matched_issue_id){
     const issue=issuesResult.rows.find(row=>Number(row.id)===Number(event.matched_issue_id));
     if(issue){const match=scoreIssueEvent(issue,event);await saveIssueEventLink(Number(issue.id),eventId,{...match,score:Math.max(.99,match.score),matchTypes:[...new Set(['known log pattern',...match.matchTypes])],reason:'Matched an existing known-issue log pattern.'});}

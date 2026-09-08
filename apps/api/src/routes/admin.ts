@@ -12,6 +12,7 @@ import { clearModerationDiagnostics, getModerationCase, getModerationRuleSetting
 import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, releaseTicket, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
 import { getDashboardNotifications, markDashboardNotificationsRead } from '../services/dashboardNotifications.js';
 import { acknowledgeTxAdminEvent, correlateIssueWithTxAdmin, getTxAdminOverview, getTxAdminSettings, listTxAdminEvents, resolveTxAdminEvent, updateTxAdminSettings } from '../services/txadmin.js';
+import { getAutomationCenter, recordAutomationFeedback, updateAutomationModuleSetting } from '../services/automation.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -27,6 +28,9 @@ function routeRequirement(method: string, route: string): string[] | null {
     'GET /api/activity': ['dashboard.view'],
     'GET /api/notifications': ['dashboard.access'],
     'POST /api/notifications/read': ['dashboard.access'],
+    'GET /api/automation': ['automation.view'],
+    'PUT /api/automation/modules/:key': ['automation.manage'],
+    'POST /api/automation/feedback': ['automation.review'],
     'GET /api/txadmin/overview': ['txadmin.view'],
     'GET /api/txadmin/events': ['txadmin.view'],
     'GET /api/txadmin/settings': ['txadmin.manage'],
@@ -377,6 +381,33 @@ export async function adminRoutes(app: FastifyInstance) {
       const body=z.object({keys:z.array(z.string().trim().min(1).max(100)).max(100)}).parse(request.body);
       const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
       return {ok:true,marked:await markDashboardNotificationsRead(identity.userId||'dashboard',body.keys)};
+    });
+
+    admin.get('/api/automation', async request=>{
+      const query=z.object({include_reviewed:z.enum(['true','false']).default('false')}).parse(request.query);
+      const access=await requestPermissionSnapshot(request);
+      return getAutomationCenter({access:{permissions:access.permissions,ownerBypass:access.owner_bypass},includeReviewed:query.include_reviewed==='true'});
+    });
+
+    admin.put('/api/automation/modules/:key',async(request,reply)=>{
+      const params=z.object({key:z.enum(['tickets','issues','suggestions','knowledge','moderation','txadmin'])}).parse(request.params);
+      const body=z.object({autonomy_level:z.enum(['off','observe','assist','auto_safe'])}).parse(request.body);
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      try{return await updateAutomationModuleSetting(params.key,body.autonomy_level,identity.userId||null);}
+      catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Unable to update automation authority.'});}
+    });
+
+    admin.post('/api/automation/feedback',async(request,reply)=>{
+      const body=z.object({
+        module:z.enum(['tickets','issues','suggestions','knowledge','moderation','txadmin']),
+        resource_type:z.string().trim().min(1).max(80),resource_id:z.string().trim().min(1).max(160),
+        outcome:z.enum(['reviewed','helpful','incorrect','reopened']),note:z.string().trim().max(2000).optional()
+      }).parse(request.body);
+      if(body.resource_type==='txadmin_match'&&!(await requireAdditionalPermission(request,reply,'txadmin.manage')))return;
+      const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+      try{return await recordAutomationFeedback({module:body.module,resourceType:body.resource_type,resourceId:body.resource_id,
+        outcome:body.outcome,note:body.note,actorUserId:identity.userId||null});}
+      catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Unable to save automation feedback.'});}
     });
 
     admin.get('/api/txadmin/overview', async () => getTxAdminOverview());
@@ -1453,11 +1484,11 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
                COALESCE((
                  SELECT jsonb_agg(tj ORDER BY tj.confidence DESC,tj.last_seen_at DESC)
                    FROM (
-                     SELECT l.service_event_id,l.confidence,l.match_types,l.reason,l.linked_by,l.first_linked_at,
+                     SELECT l.service_event_id,l.confidence,l.match_types,l.reason,l.linked_by,l.review_status,l.first_linked_at,
                             e.attention_kind,e.severity,e.resource_name,e.message,e.repeat_count,e.status,e.first_seen_at,e.last_seen_at
                        FROM issue_txadmin_links l
                        JOIN service_events e ON e.id=l.service_event_id
-                      WHERE l.issue_id=i.id
+                      WHERE l.issue_id=i.id AND l.review_status<>'dismissed'
                       ORDER BY l.confidence DESC,e.last_seen_at DESC
                       LIMIT 12
                    ) tj

@@ -74,6 +74,16 @@ export async function observationStatusAction(issueId: string, observationId: st
   });
 }
 
+export async function txAdminMatchFeedbackAction(issueId:string,eventId:string,outcome:'helpful'|'incorrect'){
+  return runDashboardAction({fallbackPath:`/issues/${issueId}`,successMessage:outcome==='helpful'?'Server evidence match confirmed.':'Incorrect server evidence match removed.'},async()=>{
+    await api('/api/automation/feedback',{method:'POST',body:JSON.stringify({
+      module:'txadmin',resource_type:'txadmin_match',resource_id:`${issueId}:${eventId}`,outcome
+    })});
+    revalidatePath('/automation');revalidatePath('/issues');revalidatePath(`/issues/${issueId}`);revalidatePath('/txadmin');
+    return null;
+  });
+}
+
 export async function candidateStatusAction(id: string, formData: FormData) {
   return runDashboardAction({fallbackPath:'/issues',successMessage:'Incoming report updated.'},async()=>{
     await api(`/api/issues/candidates/${id}`, {

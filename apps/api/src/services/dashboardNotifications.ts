@@ -185,8 +185,10 @@ export async function getDashboardNotifications(input: NotificationInput) {
     knowledgeGaps:Number(gapQueue.rows[0]?.count||0),
     moderation:Number(moderationQueue.rows[0]?.count||0),
     txadmin:Number(txAdminQueue.rows[0]?.count||0),
+    automation:0,
     personal:personal.length
   };
+  counts.automation=counts.tickets+counts.issues+counts.suggestions+counts.knowledgeGaps+counts.moderation+counts.txadmin;
   return {
     generated_at:new Date().toISOString(),
     total:counts.tickets+counts.issues+counts.suggestions+counts.knowledgeGaps+counts.moderation+counts.txadmin,
