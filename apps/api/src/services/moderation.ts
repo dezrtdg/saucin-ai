@@ -67,7 +67,19 @@ const aiResultSchema = z.object({
   rule_id: z.coerce.number().int().positive().nullable().optional(),
   confidence: z.coerce.number().min(0).max(1),
   reason: z.string().max(1200).default(''),
-  evidence: z.string().max(500).default('')
+  evidence: z.string().max(500).default(''),
+  context_kind: z.enum(['explicit_violation','targeted_hostility','gaming_banter','gameplay_or_media','quoted_or_reported','ambiguous','other']).default('other'),
+  harmful_targeting: z.boolean().default(false),
+  plausible_benign_interpretation: z.boolean().default(false)
+});
+
+const moderationVerificationSchema = z.object({
+  uphold: z.boolean(),
+  confidence: z.coerce.number().min(0).max(1),
+  context_kind: z.enum(['explicit_violation','targeted_hostility','gaming_banter','gameplay_or_media','quoted_or_reported','ambiguous','other']).default('other'),
+  harmful_targeting: z.boolean().default(false),
+  plausible_benign_interpretation: z.boolean().default(false),
+  reason: z.string().max(1200).default('')
 });
 
 function clamp(value:number,min:number,max:number){ return Math.max(min,Math.min(max,value)); }
@@ -197,6 +209,8 @@ export type ModerationDiagnosticResult =
   | 'skipped_no_eligible_rules'
   | 'ai_no_match'
   | 'ai_invalid_rule'
+  | 'skipped_benign_gaming_language'
+  | 'context_safety_gate'
   | 'below_confidence'
   | 'duplicate_case'
   | 'ai_error';
@@ -265,6 +279,8 @@ export async function listModerationDiagnostics(limit=100) {
         WHEN 'skipped_no_eligible_rules' THEN 'No eligible rules'
         WHEN 'ai_no_match' THEN 'AI no match'
         WHEN 'ai_invalid_rule' THEN 'AI chose invalid rule'
+        WHEN 'skipped_benign_gaming_language' THEN 'Benign gaming language'
+        WHEN 'context_safety_gate' THEN 'Context safety gate'
         WHEN 'below_confidence' THEN 'Below confidence'
         WHEN 'duplicate_case' THEN 'Duplicate case'
         WHEN 'ai_error' THEN 'AI error'
@@ -397,6 +413,65 @@ async function recentContext(channelId:string,storedMessageId:number){
   return result.rows.reverse().map(row=>`${String(row.author_name||'member').slice(0,80)}: ${String(row.content||'').replace(/\s+/g,' ').slice(0,500)}`).join('\n');
 }
 
+function isKnownBenignGamingLanguage(message:string) {
+  const value=message
+    .normalize('NFKC')
+    .replace(/[’‘]/g,"'")
+    .replace(/\s+/g,' ')
+    .trim()
+    .toLowerCase();
+
+  // "Clip" is ordinary gaming/media language when the complete message is about
+  // recording a moment. Keep this deliberately narrow so abusive text elsewhere
+  // in the same message is still classified normally.
+  return /^(?:(?:i(?:'m| am)?|im)\s+(?:gonna|going to|will)\s+)?clip(?:ped)?\s+(?:that|this|it)(?:\s+(?:bro|lol|lmao|lmfao))?[.!?]*$/.test(value)
+    || /^(?:did|can|could|would)\s+(?:you|someone|anyone)\s+clip\s+(?:that|this|it)[.!?]*$/.test(value);
+}
+
+async function trustedFalsePositiveExamples(ruleIds:number[]) {
+  if(!ruleIds.length) return '(none available)';
+  const result=await db.query(`
+    SELECT rule_title,message_content,context_snapshot
+      FROM moderation_trusted_calibration_examples
+     WHERE staff_outcome='dismissed'
+       AND rule_article_id=ANY($1::bigint[])
+     ORDER BY reviewed_at DESC NULLS LAST
+     LIMIT 8`,[ruleIds]);
+  if(!result.rowCount) return '(none available)';
+  return result.rows.map((row,index)=>[
+    `FALSE POSITIVE ${index+1} · ${String(row.rule_title||'rule').slice(0,120)}`,
+    `Message: ${String(row.message_content||'').replace(/\s+/g,' ').slice(0,350)}`,
+    row.context_snapshot?`Context: ${String(row.context_snapshot).replace(/\s+/g,' ').slice(0,500)}`:''
+  ].filter(Boolean).join('\n')).join('\n\n');
+}
+
+async function verifyModerationMatch(input:{
+  rule:EligibleRule; context:string; authorName:string; content:string;
+  firstPass:z.infer<typeof aiResultSchema>; calibration:string;
+}) {
+  if(!client) return null;
+  const response=await client.responses.create({
+    model:env.AI_CLASSIFIER_MODEL,
+    reasoning:{effort:'low'},
+    instructions:`You are the conservative SECOND-PASS safety reviewer for a gaming-community Discord moderation system. The first classifier proposed a rule violation. Independently decide whether that action should be upheld.
+
+The community naturally includes profanity, competitive trash talk, jokes, sarcasm, roleplay, discussion of in-game violence, and gaming/media terms such as clip, kill, shoot, smoke, cook, destroy, steal, or rob. Those words are not violations by themselves. "I'm going to clip that" ordinarily means saving a video clip, not threatening someone.
+
+UPHOLD only when the target message clearly and materially violates the supplied verified rule after considering the conversation. For harassment or toxicity, require clear unwanted targeting, personal abuse, discriminatory hostility, intimidation, or a sustained/repeated pattern supported by the available context. Profanity, teasing, rivalry, disagreement, or an apparently mutual exchange is insufficient without clear abusive conduct. Quoting, reporting, lyrics, memes, moderation discussion, gameplay narration, roleplay, and media capture are not violations unless the message itself independently contains prohibited conduct.
+
+If a reasonable benign gaming, banter, quoting, reporting, or media interpretation remains, set uphold=false and plausible_benign_interpretation=true. Missing context is uncertainty, not proof. Do not invent intent, relationships, history, or harm.
+
+Staff-dismissed examples are calibration signals only; use them when genuinely analogous.
+
+Return ONLY compact JSON:
+{"uphold":boolean,"confidence":number,"context_kind":"explicit_violation|targeted_hostility|gaming_banter|gameplay_or_media|quoted_or_reported|ambiguous|other","harmful_targeting":boolean,"plausible_benign_interpretation":boolean,"reason":string}`,
+    input:`VERIFIED RULE:\n${input.rule.title}\n${input.rule.body.slice(0,3000)}\n\nRECENT CONVERSATION:\n${input.context||'(none)'}\n\nTARGET MESSAGE (${input.authorName}):\n${input.content.slice(0,3000)}\n\nFIRST-PASS PROPOSAL:\n${JSON.stringify(input.firstPass)}\n\nSTAFF-DISMISSED FALSE POSITIVES:\n${input.calibration}`,
+    max_output_tokens:700
+  });
+  const raw=response.output_text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+  return moderationVerificationSchema.parse(JSON.parse(raw));
+}
+
 function rulesPrompt(rules:EligibleRule[]) {
   return rules.map(rule=>[
     `RULE_ID: ${rule.id}`,
@@ -410,7 +485,7 @@ function rulesPrompt(rules:EligibleRule[]) {
 
 export async function processModerationMessage(input:{
   storedMessageId:number; guildId:string; channelId:string; channelName?:string|null; discordMessageId:string;
-  discordUserId:string; authorName:string; content:string; memberRoleIds:string[];
+  discordUserId:string; authorName:string; content:string; memberRoleIds:string[]; replyContext?:string|null;
 }):Promise<ModerationDetection|null> {
   const settings=await getModerationSettings();
   const baseDiag={
@@ -438,6 +513,13 @@ export async function processModerationMessage(input:{
     return null;
   }
 
+  if(isKnownBenignGamingLanguage(input.content)){
+    await diagnostic(settings,{...baseDiag,resultCode:'skipped_benign_gaming_language',details:{
+      reason:'The complete message is a common request or statement about saving a gameplay clip.'
+    }});
+    return null;
+  }
+
   const candidates=await candidateRules(input.content);
   if(!candidates.length){
     await diagnostic(settings,{...baseDiag,resultCode:'skipped_no_candidate_rules'});
@@ -461,21 +543,27 @@ export async function processModerationMessage(input:{
     return null;
   }
 
-  const context=await recentContext(input.channelId,input.storedMessageId);
+  const recent=await recentContext(input.channelId,input.storedMessageId);
+  const context=[input.replyContext?`DIRECTLY REPLIED TO:\n${input.replyContext}`:'',recent?`RECENT MESSAGES:\n${recent}`:'']
+    .filter(Boolean).join('\n\n');
+  const calibration=await trustedFalsePositiveExamples(rules.map(rule=>rule.id)).catch(()=>'(unavailable)');
 
   let parsed:z.infer<typeof aiResultSchema>;
   try {
     const response=await client.responses.create({
       model:env.AI_CLASSIFIER_MODEL,
       reasoning:{effort:'low'},
-      instructions:`You are an OBSERVE-ONLY Discord moderation classifier for ${env.SERVER_NAME}. Determine whether the TARGET MESSAGE itself is a likely violation of one of the supplied VERIFIED DISCORD RULES. Context exists only to disambiguate the target. Do not invent rules, thresholds, exceptions, punishments, or facts that are not supported by the supplied rules.
+      instructions:`You are an OBSERVE-ONLY Discord moderation classifier for ${env.SERVER_NAME}, a gaming and roleplay community. Determine whether the TARGET MESSAGE itself is a likely violation of one of the supplied VERIFIED DISCORD RULES. Use the full recent conversation to interpret meaning, tone, who is being addressed, and whether the exchange appears mutual. Do not invent rules, thresholds, exceptions, relationships, punishments, or facts that are not supported by the supplied rules.
 
 MATCHING RULES:
 - Match only when the target message's conduct is materially supported as prohibited by a supplied verified rule.
 - Do NOT flag a message merely because it mentions prohibited behavior, quotes someone, asks what a rule means, reports another player's behavior, discusses moderation, or contains ordinary profanity with no applicable rule violation.
 - Direct insults, targeted abusive language, harassment, or hostility SHOULD match when a supplied verified rule prohibits harassment, personal abuse, targeted insults, toxicity, disrespectful conduct, or equivalent behavior.
 - A profanity word by itself is not enough. Targeting and the verified rule matter.
-- If context clearly shows quoting, reporting, joking/banter, or another benign explanation, reduce confidence or return matched=false.
+- Gaming communities naturally contain profanity, competitive trash talk, jokes, sarcasm, roleplay, and discussion of in-game violence. These are not violations merely because the words sound aggressive outside gaming context.
+- Terms such as clip, kill, shoot, smoke, cook, destroy, steal, or rob may describe gameplay or media capture. For example, "I'm going to clip that" normally means saving a video clip and is not harassment or a threat.
+- For harassment/toxicity, distinguish reciprocal good-natured banter from unwanted personal abuse. Require clear harmful targeting, discriminatory hostility, intimidation, or a sustained/repeated pattern supported by the available context.
+- Missing context is uncertainty, not evidence of malicious intent. If a reasonable benign gaming, banter, quoting, reporting, roleplay, or media interpretation remains, return matched=false.
 
 CONFIDENCE CALIBRATION:
 Confidence measures how strongly the TARGET MESSAGE fits the VERIFIED RULE, not how severe or offensive the language feels.
@@ -487,10 +575,10 @@ Confidence measures how strongly the TARGET MESSAGE fits the VERIFIED RULE, not 
 For a rule that explicitly prohibits harassment/personal abuse/targeted insults, a message directly addressed at a person such as "you're a stupid ass bitch" is ordinarily a CLEAR HIGH-CONFIDENCE match (about 0.90+) unless context shows it is quoting, reporting, consensual banter, or otherwise non-abusive.
 
 Return ONLY compact JSON:
-{"matched":boolean,"rule_id":number|null,"confidence":number,"reason":string,"evidence":string}
+{"matched":boolean,"rule_id":number|null,"confidence":number,"reason":string,"evidence":string,"context_kind":"explicit_violation|targeted_hostility|gaming_banter|gameplay_or_media|quoted_or_reported|ambiguous|other","harmful_targeting":boolean,"plausible_benign_interpretation":boolean}
 
 confidence must be 0-1. evidence should quote or concisely identify the specific target-message wording that supports the match. reason should explain the rule-to-message fit, not moralize. If the evidence does not support a verified violation, use matched=false.`,
-      input:`RECENT CONTEXT (may be empty):\n${context||'(none)'}\n\nTARGET MESSAGE (${input.authorName}):\n${input.content.slice(0,4000)}\n\nVERIFIED DISCORD RULES:\n${rulesPrompt(rules)}`,
+      input:`RECENT CONTEXT (may be empty):\n${context||'(none)'}\n\nTARGET MESSAGE (${input.authorName}):\n${input.content.slice(0,4000)}\n\nVERIFIED DISCORD RULES:\n${rulesPrompt(rules)}\n\nRECENT STAFF-DISMISSED FALSE POSITIVES:\n${calibration}`,
       max_output_tokens:900
     });
     const raw=response.output_text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
@@ -517,11 +605,44 @@ confidence must be 0-1. evidence should quote or concisely identify the specific
     return null;
   }
 
+  if(parsed.plausible_benign_interpretation || ['gaming_banter','gameplay_or_media','quoted_or_reported','ambiguous'].includes(parsed.context_kind)){
+    await diagnostic(settings,{...baseDiag,resultCode:'context_safety_gate',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence:parsed.confidence,details:{
+      stage:'first_pass',ai_reason:parsed.reason,ai_evidence:parsed.evidence,context_kind:parsed.context_kind,
+      harmful_targeting:parsed.harmful_targeting,plausible_benign_interpretation:parsed.plausible_benign_interpretation
+    }});
+    return null;
+  }
+
+  let verification:z.infer<typeof moderationVerificationSchema>;
+  try {
+    const checked=await verifyModerationMatch({rule,context,authorName:input.authorName,content:input.content,firstPass:parsed,calibration});
+    if(!checked) return null;
+    verification=checked;
+  } catch(error) {
+    // A failed safety review must fail closed: never send a player-facing action
+    // based on only one uncertain model decision.
+    await diagnostic(settings,{...baseDiag,resultCode:'context_safety_gate',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence:parsed.confidence,details:{
+      stage:'second_pass_error',error:error instanceof Error?error.message:String(error),first_pass_reason:parsed.reason
+    }});
+    return null;
+  }
+
+  if(!verification.uphold || verification.plausible_benign_interpretation || ['gaming_banter','gameplay_or_media','quoted_or_reported','ambiguous'].includes(verification.context_kind)){
+    await diagnostic(settings,{...baseDiag,resultCode:'context_safety_gate',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence:verification.confidence,details:{
+      stage:'second_pass',first_pass_reason:parsed.reason,review_reason:verification.reason,context_kind:verification.context_kind,
+      harmful_targeting:verification.harmful_targeting,plausible_benign_interpretation:verification.plausible_benign_interpretation
+    }});
+    return null;
+  }
+
   const threshold=rule.minimum_confidence==null?settings.minimum_confidence:clamp(rule.minimum_confidence,0,1);
-  const confidence=clamp(Number(parsed.confidence),0,1);
+  // Both independent passes must meet the configured confidence threshold. Use
+  // the lower score so one overconfident pass cannot force an action.
+  const confidence=clamp(Math.min(Number(parsed.confidence),Number(verification.confidence)),0,1);
   if(confidence<threshold){
     await diagnostic(settings,{...baseDiag,resultCode:'below_confidence',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence,threshold,details:{
-      ai_reason:parsed.reason,ai_evidence:parsed.evidence,threshold_source:rule.minimum_confidence==null?'global':'rule_override'
+      ai_reason:parsed.reason,ai_evidence:parsed.evidence,verification_reason:verification.reason,
+      threshold_source:rule.minimum_confidence==null?'global':'rule_override'
     }});
     return null;
   }
@@ -544,7 +665,7 @@ confidence must be 0-1. evidence should quote or concisely identify the specific
     ON CONFLICT (discord_message_id) DO NOTHING
     RETURNING id`,[
       input.guildId,input.channelId,input.channelName||null,input.discordMessageId,input.storedMessageId,input.discordUserId,input.authorName,input.content,
-      rule.id,rule.title,confidence,String(parsed.reason||'').slice(0,1200),String(parsed.evidence||'').slice(0,500),recommendedAction,
+      rule.id,rule.title,confidence,String(`${parsed.reason} Second-pass: ${verification.reason}`.trim()).slice(0,1200),String(parsed.evidence||'').slice(0,500),recommendedAction,
       deleteMessageRecommended,priorCount,offenseNumber,repeatDays,JSON.stringify(ladder)
     ]);
 
@@ -558,13 +679,15 @@ confidence must be 0-1. evidence should quote or concisely identify the specific
   await db.query('UPDATE moderation_cases SET public_id=$1 WHERE id=$2',[publicId,caseId]);
   await db.query(`INSERT INTO moderation_case_events (case_id,event_type,details) VALUES ($1,'detected',$2::jsonb)`,[caseId,JSON.stringify({
     confidence,rule_id:rule.id,mode:'observe',prior_confirmed_count:priorCount,offense_number:offenseNumber,
-    repeat_window_days:repeatDays,recommended_action:recommendedAction,delete_message_recommended:deleteMessageRecommended,action_ladder:ladder
+    repeat_window_days:repeatDays,recommended_action:recommendedAction,delete_message_recommended:deleteMessageRecommended,action_ladder:ladder,
+    context_kind:verification.context_kind,harmful_targeting:verification.harmful_targeting,second_pass_confidence:verification.confidence
   })]);
 
   await diagnostic(settings,{...baseDiag,resultCode:'case_created',matchedRuleId:rule.id,matchedRuleTitle:rule.title,confidence,threshold,details:{
     public_id:publicId,recommended_action:recommendedAction,delete_message_recommended:deleteMessageRecommended,
     prior_confirmed_count:priorCount,offense_number:offenseNumber,repeat_window_days:repeatDays,
-    action_ladder:ladder,ai_reason:parsed.reason,ai_evidence:parsed.evidence
+    action_ladder:ladder,ai_reason:parsed.reason,ai_evidence:parsed.evidence,verification_reason:verification.reason,
+    context_kind:verification.context_kind,harmful_targeting:verification.harmful_targeting,second_pass_confidence:verification.confidence
   }});
 
   return {

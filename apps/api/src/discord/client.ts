@@ -1520,6 +1520,13 @@ async function handleMessage(message: Message, options: { directMentionEdit?: bo
   // Moderation runs independently of support replies and may enforce according to the current live-mode configuration.
   if (policy.monitor_messages && !options.directMentionEdit) {
     const memberRoleIds = message.member ? [...message.member.roles.cache.keys()] : [];
+    let moderationReplyContext:string|null=null;
+    if(message.reference?.messageId){
+      const replied=await (message.channel as GuildTextBasedChannel).messages.fetch(message.reference.messageId).catch(()=>null);
+      if(replied&&!replied.author.bot&&replied.content.trim()){
+        moderationReplyContext=`${replied.author.username}: ${trimContext(replied.content,1200)}`;
+      }
+    }
     void processModerationMessage({
       storedMessageId: storedId,
       guildId: message.guildId,
@@ -1529,7 +1536,8 @@ async function handleMessage(message: Message, options: { directMentionEdit?: bo
       discordUserId: message.author.id,
       authorName: message.author.username,
       content: message.content,
-      memberRoleIds
+      memberRoleIds,
+      replyContext:moderationReplyContext
     }).then(detection => detection ? postModerationAudit(detection, message) : undefined)
       .catch(error => console.error('[moderation] processing failed', error));
   } else {

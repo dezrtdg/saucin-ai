@@ -13,7 +13,7 @@ type Diagnostic={
 type Data={enabled:boolean;mode:'off'|'observe';rows:Diagnostic[]};
 
 const good=new Set(['case_created']);
-const warn=new Set(['below_confidence','ai_no_match']);
+const warn=new Set(['below_confidence','ai_no_match','skipped_benign_gaming_language','context_safety_gate']);
 const bad=new Set(['ai_error']);
 
 function pct(value:number|string|null){if(value==null)return '—';return `${Math.round(Number(value)*100)}%`;}
@@ -28,6 +28,8 @@ function detailSummary(row:Diagnostic){
   if(row.result_code==='skipped_no_candidate_rules') return 'No published moderation-eligible rules were available.';
   if(row.result_code==='skipped_no_eligible_rules') return 'Rules exist, but role/channel scope removed all of them.';
   if(row.result_code==='ai_no_match') return String(d.ai_reason||'AI did not consider the target message a supported violation.');
+  if(row.result_code==='skipped_benign_gaming_language') return String(d.reason||'Recognized as ordinary gaming or media-capture language.');
+  if(row.result_code==='context_safety_gate') return String(d.review_reason||d.ai_reason||d.reason||'A context check found a reasonable non-violating interpretation.');
   if(row.result_code==='below_confidence') return String(d.ai_reason||'AI matched a rule but did not reach the configured threshold.');
   if(row.result_code==='ai_error') return String(d.error||'AI classification failed.');
   if(row.result_code==='case_created'){
