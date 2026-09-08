@@ -13,6 +13,7 @@ import { backfillIssueEmbeddings } from './services/issues.js';
 import { backfillSuggestionEmbeddings } from './services/suggestions.js';
 import { startLiveModerationWorker, stopLiveModerationWorker } from './services/liveModeration.js';
 import { startModerationNoticeEnricher } from './services/moderationNoticeEnricher.js';
+import { backfillIssueTxAdminCorrelations } from './services/txadmin.js';
 
 const app = Fastify({ logger: true });
 await runMigrations();
@@ -36,6 +37,9 @@ startDiscord()
 backfillKnowledgeEmbeddings(200).catch((error) => app.log.error(error, 'Knowledge embedding backfill failed'));
 backfillIssueEmbeddings(100).catch((error) => app.log.error(error, 'Issue embedding backfill failed'));
 backfillSuggestionEmbeddings(100).catch((error) => app.log.error(error, 'Suggestion embedding backfill failed'));
+backfillIssueTxAdminCorrelations(100)
+  .then(linked=>{if(linked)app.log.info({linked},'Linked existing issues with actionable txAdmin evidence');})
+  .catch(error=>app.log.error(error,'Issue txAdmin correlation backfill failed'));
 
 async function shutdown(signal: string) {
   app.log.info({ signal }, 'Shutting down');

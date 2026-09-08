@@ -43,7 +43,7 @@ export async function getDashboardNotifications(input: NotificationInput) {
     canSuggestions?db.query(`SELECT count(*)::int AS count FROM suggestions WHERE status IN ('candidate','reviewing')`):zero,
     canGaps?db.query(`SELECT count(*)::int AS count FROM knowledge_gaps WHERE status='open'`):zero,
     canModeration?db.query(`SELECT count(*)::int AS count FROM moderation_cases WHERE status='pending'`):zero,
-    canTxAdmin?db.query(`SELECT count(*)::int AS count FROM service_events WHERE source='txadmin' AND status='open' AND NOT suppressed AND severity IN ('error','critical')`):zero,
+    canTxAdmin?db.query(`SELECT count(*)::int AS count FROM service_events WHERE source='txadmin' AND status='open' AND NOT suppressed AND actionable=TRUE`):zero,
     canTickets?db.query(`
       SELECT tm.id,tm.created_at,t.id AS ticket_id,t.public_id,t.subject,tm.author_name
         FROM ticket_messages tm
@@ -198,7 +198,7 @@ export async function getDashboardNotifications(input: NotificationInput) {
       ...(Number(suggestionQueue.rows[0]?.count||0)?[{key:'suggestions',label:'Suggestions needing review',count:Number(suggestionQueue.rows[0].count),href:'/suggestions?status=candidate'}]:[]),
       ...(counts.knowledgeGaps?[{key:'knowledge-gaps',label:'Open knowledge gaps',count:counts.knowledgeGaps,href:'/knowledge-gaps?status=open'}]:[]),
       ...(counts.moderation?[{key:'moderation',label:'Moderation reviews',count:counts.moderation,href:'/moderation?status=pending'}]:[]),
-      ...(counts.txadmin?[{key:'txadmin',label:'Server errors',count:counts.txadmin,href:'/txadmin?status=open&severity=error'}]:[])
+      ...(counts.txadmin?[{key:'txadmin',label:'Server attention needed',count:counts.txadmin,href:'/txadmin?view=attention&status=open'}]:[])
     ]
   };
 }

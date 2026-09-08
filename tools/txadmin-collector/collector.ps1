@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$CollectorVersion = '1.0.2'
+$CollectorVersion = '1.0.3'
 $InstallDirectory = Split-Path -Parent $ConfigPath
 $StatePath = Join-Path $InstallDirectory 'state.json'
 $PendingPath = Join-Path $InstallDirectory 'pending.json'
@@ -92,7 +92,10 @@ function Convert-LogLineToEvent {
     $message = Protect-Text $Line
     if ([string]::IsNullOrWhiteSpace($message)) { return $null }
     $severity = $null; $category = 'general'; $eventType = $null
-    if ($message -match '(?i)\b(crash(?:ed)?|fatal|segmentation fault|access violation|stack overflow)\b') {
+    if ($message -match '(?i)(?:\b(update|new version|upgrade)\b.{0,60}\b(available|released|ready)\b|\b(outdated|update available|newer version)\b)' -and
+        $message -notmatch '(?i)\b(up[ -]?to[ -]?date|latest version|no updates?|checking for updates?)\b') {
+        $severity = 'info'; $category = 'update'; $eventType = 'resource.update_available'
+    } elseif ($message -match '(?i)\b(crash(?:ed)?|fatal|segmentation fault|access violation|stack overflow)\b') {
         $severity = 'critical'; $category = 'crash'; $eventType = 'server.crash'
     } elseif ($message -match '(?i)\b(oxmysql|mysql|mariadb|database|sql)\b' -and $message -match '(?i)\b(error|failed|unable|exception|doesn''t have a default value|duplicate entry)\b') {
         $severity = 'error'; $category = 'database'; $eventType = 'database.error'

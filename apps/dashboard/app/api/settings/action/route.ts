@@ -31,7 +31,9 @@ export async function POST(request:Request){
           notify_critical:checked(formData,'notify_critical'),
           notify_recurring_errors:checked(formData,'notify_recurring_errors'),
           hide_alert_mentions:checked(formData,'hide_alert_mentions'),
-          noise_patterns:value(formData,'noise_patterns').split(/\r?\n/).map(item=>item.trim()).filter(Boolean)
+          noise_patterns:value(formData,'noise_patterns').split(/\r?\n/).map(item=>item.trim()).filter(Boolean),
+          auto_link_issue_reports:checked(formData,'auto_link_issue_reports'),
+          correlation_min_confidence:Math.max(.4,Math.min(.95,Number(value(formData,'correlation_min_confidence')||.55)))
         })});
         break;
 

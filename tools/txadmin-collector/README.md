@@ -32,7 +32,9 @@ C:\Users\mgsau\Desktop\Saucin qbox\server\FXServer.exe
 
 It prompts for the token, installs under `C:\ProgramData\SaucinAI\txadmin-collector`, locks the folder to Administrators and SYSTEM, creates a startup scheduled task, and starts it immediately.
 
-The dashboard should show **Collector online** within 30 seconds. The collector starts at the end of existing log files, so old logs are not uploaded; new warnings and errors appear as they happen.
+The dashboard should show **Collector online** within 30 seconds. The collector starts at the end of existing log files, so old logs are not uploaded. Version 1.0.3 recognizes script-update notices, startup blockers, runtime failures, crashes, and FXServer process changes. Routine warnings and other diagnostic lines remain available only in the dashboard's complete history view.
+
+When a Discord bug report becomes a tracked issue, Saucin AI automatically compares it with recent actionable txAdmin events. Likely matches are attached privately to the issue dashboard with a confidence score; raw server logs are never posted into the public Discord discussion.
 
 The txData path is used only for `.log` monitoring. The server path is used only to verify whether that exact `FXServer.exe` process is running and to report start/stop transitions; the collector does not scan resources or execute anything in the server directory.
 

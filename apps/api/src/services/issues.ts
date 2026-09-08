@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { db } from '../db.js';
 import { env } from '../env.js';
+import { correlateIssueWithTxAdmin } from './txadmin.js';
 
 export type IssueQueryPlan = {
   original: string;
@@ -172,6 +173,7 @@ export async function findKnownIssue(plan: IssueQueryPlan): Promise<IssueMatch |
 
 export async function addIssueReport(issueId: number, discordMessageId: number | null, discordUserId: string, reportText: string, source = 'discord') {
   const clientDb = await db.connect();
+  let insertedReport=false;
   try {
     await clientDb.query('BEGIN');
     const existing = await clientDb.query(
@@ -181,25 +183,27 @@ export async function addIssueReport(issueId: number, discordMessageId: number |
     if (existing.rowCount) {
       await clientDb.query('UPDATE issues SET last_seen=NOW(), updated_at=NOW() WHERE id=$1', [issueId]);
       await clientDb.query('COMMIT');
-      return false;
+    }else{
+      await clientDb.query(
+        `INSERT INTO issue_reports (issue_id, discord_message_id, discord_user_id, report_text, source)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [issueId, discordMessageId, discordUserId, reportText, source]
+      );
+      await clientDb.query(
+        `UPDATE issues SET report_count=report_count+1,last_seen=NOW(),updated_at=NOW() WHERE id=$1`,
+        [issueId]
+      );
+      await clientDb.query('COMMIT');
+      insertedReport=true;
     }
-    await clientDb.query(
-      `INSERT INTO issue_reports (issue_id, discord_message_id, discord_user_id, report_text, source)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [issueId, discordMessageId, discordUserId, reportText, source]
-    );
-    await clientDb.query(
-      `UPDATE issues SET report_count=report_count+1,last_seen=NOW(),updated_at=NOW() WHERE id=$1`,
-      [issueId]
-    );
-    await clientDb.query('COMMIT');
-    return true;
   } catch (error) {
     await clientDb.query('ROLLBACK');
     throw error;
   } finally {
     clientDb.release();
   }
+  await correlateIssueWithTxAdmin(issueId).catch(error=>console.warn('[issues] txAdmin correlation failed',error));
+  return insertedReport;
 }
 
 export async function getIssue(issueId: number) {
@@ -465,6 +469,7 @@ export async function linkCandidateToIssue(candidateId: number, issueId: number)
   }
 
   await refreshIssueEmbedding(issueId).catch(error => console.error('[issues] linked issue embedding refresh failed', error));
+  await correlateIssueWithTxAdmin(issueId).catch(error=>console.warn('[issues] txAdmin correlation failed',error));
   const issue = await getIssue(issueId);
   return { issue, insertedReports };
 }
@@ -648,6 +653,7 @@ export async function processIssueThreadMessage(input: {
   if (insight.symptoms.length || insight.reproduction_steps.length || insight.locations.length) {
     await refreshIssueEmbedding(input.issueId).catch(error => console.error('[issues] thread embedding refresh failed', error));
   }
+  await correlateIssueWithTxAdmin(input.issueId).catch(error=>console.warn('[issues] txAdmin correlation failed',error));
   return { issue: await getIssue(input.issueId), insight };
 }
 

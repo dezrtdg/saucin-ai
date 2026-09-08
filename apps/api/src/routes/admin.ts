@@ -11,7 +11,7 @@ import { allPermissionKeys, parseDashboardIdentity, permissionCatalog, permissio
 import { clearModerationDiagnostics, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
 import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, releaseTicket, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
 import { getDashboardNotifications, markDashboardNotificationsRead } from '../services/dashboardNotifications.js';
-import { acknowledgeTxAdminEvent, getTxAdminOverview, getTxAdminSettings, listTxAdminEvents, resolveTxAdminEvent, updateTxAdminSettings } from '../services/txadmin.js';
+import { acknowledgeTxAdminEvent, correlateIssueWithTxAdmin, getTxAdminOverview, getTxAdminSettings, listTxAdminEvents, resolveTxAdminEvent, updateTxAdminSettings } from '../services/txadmin.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -229,7 +229,9 @@ const txAdminSettingsBody=z.object({
   alert_channel_id:z.string().trim().max(32).nullable().optional(),
   alert_role_ids:z.array(z.string().trim().min(1).max(32)).max(100),
   notify_critical:z.boolean(),notify_recurring_errors:z.boolean(),hide_alert_mentions:z.boolean(),
-  noise_patterns:z.array(z.string().trim().min(3).max(300)).max(100)
+  noise_patterns:z.array(z.string().trim().min(3).max(300)).max(100),
+  auto_link_issue_reports:z.boolean(),
+  correlation_min_confidence:z.coerce.number().min(.4).max(.95)
 });
 const issueBody = z.object({
   title: z.string().trim().min(3).max(200),
@@ -400,6 +402,7 @@ export async function adminRoutes(app: FastifyInstance) {
         resource:z.string().trim().max(160).default(''),
         q:z.string().trim().max(300).default(''),
         noise:z.enum(['hide','only','all']).default('hide'),
+        view:z.enum(['attention','updates','failures','history']).default('attention'),
         limit:z.coerce.number().int().min(1).max(300).default(100)
       }).parse(request.query);
       return listTxAdminEvents({...query,query:query.q});
@@ -1446,7 +1449,19 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
                      SELECT u.id,u.update_type,u.from_value,u.to_value,u.note,u.created_by,u.created_at
                        FROM issue_updates u WHERE u.issue_id=i.id ORDER BY u.created_at DESC LIMIT 20
                    ) uj
-               ), '[]'::jsonb) AS recent_updates
+               ), '[]'::jsonb) AS recent_updates,
+               COALESCE((
+                 SELECT jsonb_agg(tj ORDER BY tj.confidence DESC,tj.last_seen_at DESC)
+                   FROM (
+                     SELECT l.service_event_id,l.confidence,l.match_types,l.reason,l.linked_by,l.first_linked_at,
+                            e.attention_kind,e.severity,e.resource_name,e.message,e.repeat_count,e.status,e.first_seen_at,e.last_seen_at
+                       FROM issue_txadmin_links l
+                       JOIN service_events e ON e.id=l.service_event_id
+                      WHERE l.issue_id=i.id
+                      ORDER BY l.confidence DESC,e.last_seen_at DESC
+                      LIMIT 12
+                   ) tj
+               ), '[]'::jsonb) AS txadmin_matches
           FROM issues i
          ORDER BY CASE i.status WHEN 'investigating' THEN 1 WHEN 'fix_in_progress' THEN 2 WHEN 'testing' THEN 3 WHEN 'monitoring' THEN 4 WHEN 'new' THEN 5 WHEN 'acknowledged' THEN 6 WHEN 'resolved' THEN 7 ELSE 8 END,
                   CASE i.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,i.last_seen DESC
@@ -1506,6 +1521,7 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
       const publicId = `BUG-${String(row.id).padStart(4, '0')}`;
       const updated = await db.query('UPDATE issues SET public_id=$1 WHERE id=$2 RETURNING *', [publicId,row.id]);
       await refreshIssueEmbedding(Number(row.id)).catch(error => request.log.warn({ error }, 'issue embedding refresh failed'));
+      await correlateIssueWithTxAdmin(Number(row.id)).catch(error=>request.log.warn({error},'issue txAdmin correlation failed'));
       await ensureIssueDiscordThread(Number(row.id)).catch(error => request.log.warn({ error }, 'issue Discord ticket creation failed'));
       return reply.code(201).send((await db.query('SELECT * FROM issues WHERE id=$1',[row.id])).rows[0]);
     });
@@ -1538,6 +1554,7 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
           [params.id,type,fromValue,toValue,note,'dashboard']);
       }
       await refreshIssueEmbedding(params.id).catch(error => request.log.warn({ error }, 'issue embedding refresh failed'));
+      await correlateIssueWithTxAdmin(params.id).catch(error=>request.log.warn({error},'issue txAdmin correlation failed'));
       if(previous.status==='resolved'&&body.status!=='resolved'){
         await applyIssueDiscordLifecycle(params.id,body.status).catch(error=>request.log.warn({error},'issue Discord discussion reopen failed'));
       }
