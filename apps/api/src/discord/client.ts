@@ -41,7 +41,7 @@ import {
   refineSuggestionForPublishing,
   recordSuggestion
 } from '../services/suggestions.js';
-import { processModerationMessage, recordModerationIngressDiagnostic, type ModerationDetection } from '../services/moderation.js';
+import { processModerationMessage, recordModerationIngressDiagnostic, reportModerationMessage, type MemberModerationReport, type ModerationDetection } from '../services/moderation.js';
 import {
   activateTicket,
   buildTicketTranscript,
@@ -1380,11 +1380,109 @@ async function postModerationAudit(detection: ModerationDetection, message: Mess
   }
 }
 
+function isMemberReportCommand(message:Message){
+  return removeBotMention(message.content).trim().toLowerCase()==='report';
+}
+
+async function sendTemporaryReportReply(message:Message,content:string){
+  const sent=await message.reply({content,allowedMentions:{parse:[],repliedUser:false}}).catch(()=>null);
+  if(sent){
+    const timer=setTimeout(()=>void sent.delete().catch(()=>undefined),10_000);
+    timer.unref();
+  }
+}
+
+async function postMemberReportAudit(report:MemberModerationReport,target:Message,reporter:Message){
+  if(!report.audit_channel_id||!discord.isReady()) return;
+  const channel=await discord.channels.fetch(report.audit_channel_id).catch(()=>null);
+  if(!channel||!channel.isTextBased()||channel.isDMBased()) return;
+  const link=target.guildId?`https://discord.com/channels/${target.guildId}/${target.channelId}/${target.id}`:'';
+  const assessment=report.confidence>0
+    ?`${Math.round(report.confidence*100)}% possible match to **${report.rule_title}**`
+    :'No clear verified-rule match; staff judgment required';
+  await (channel as any).send({
+    content:[
+      `🛡️ **${report.public_id} · Member report**`,
+      `**Reported by:** ${reporter.author.username} (${reporter.author.id})`,
+      `**Message author:** ${target.author.username} (${target.author.id})`,
+      `**Reports on this message:** ${report.report_count}`,
+      `**AI context check:** ${assessment}`,
+      `**Assessment:** ${report.reason}`,
+      report.evidence?`**Evidence:** ${report.evidence}`:'',
+      link?`**Original message:** ${link}`:'',
+      '',
+      '**Staff review required.** No reminder, warning, deletion, timeout, or escalation was applied.'
+    ].filter(Boolean).join('\n').slice(0,1950),
+    allowedMentions:{parse:[]}
+  });
+}
+
+async function handleMemberReport(message:Message){
+  if(!isMemberReportCommand(message)) return false;
+  if(!message.reference?.messageId){
+    await sendTemporaryReportReply(message,'Reply directly to the message you want staff to review, then type `report`.');
+    return true;
+  }
+
+  const target=await (message.channel as GuildTextBasedChannel).messages.fetch(message.reference.messageId).catch(()=>null);
+  if(!target){
+    await sendTemporaryReportReply(message,'I could not find the message you replied to. It may have already been deleted.');
+    return true;
+  }
+  if(target.author.bot){
+    await sendTemporaryReportReply(message,'Bot messages cannot be submitted through the member-report command.');
+    return true;
+  }
+  if(target.author.id===message.author.id){
+    await sendTemporaryReportReply(message,'You cannot report your own message.');
+    return true;
+  }
+  const targetContent=messageEvidenceText(target);
+  if(!targetContent){
+    await sendTemporaryReportReply(message,'That message has no text or attachment for staff to review.');
+    return true;
+  }
+
+  try{
+    const storedTargetId=await storeMessage(target);
+    let repliedContext:string|null=null;
+    if(target.reference?.messageId){
+      const replied=await (target.channel as GuildTextBasedChannel).messages.fetch(target.reference.messageId).catch(()=>null);
+      if(replied&&!replied.author.bot&&replied.content.trim()) repliedContext=`${replied.author.username}: ${trimContext(replied.content,1200)}`;
+    }
+    const report=await reportModerationMessage({
+      storedMessageId:storedTargetId,guildId:target.guildId!,channelId:target.channelId,
+      channelName:getChannelName(target.channel)||null,discordMessageId:target.id,discordUserId:target.author.id,
+      authorName:target.author.username,content:targetContent,replyContext:repliedContext,
+      reporterUserId:message.author.id,reporterName:message.author.globalName||message.author.username,commandMessageId:message.id
+    });
+    if(report.report_added) await postMemberReportAudit(report,target,message).catch(error=>console.warn('[moderation] unable to post member report audit',error));
+    const duplicate=!report.report_added;
+    const confirmation=duplicate
+      ?`${report.public_id} already contains your report. Staff can review it from the moderation queue.`
+      :`${report.public_id} was sent to staff for review. Reporting does not automatically punish or notify the other member.`;
+    const dm=await message.author.send(`🛡️ **Saucin AI report received**\n${confirmation}`).catch(()=>null);
+    if(!dm) await sendTemporaryReportReply(message,`🛡️ ${confirmation}`);
+    await message.delete().catch(()=>undefined);
+  }catch(error){
+    const rateLimited=error instanceof Error&&error.message==='report_rate_limited';
+    await sendTemporaryReportReply(message,rateLimited
+      ?'You have submitted several reports recently. Please wait 10 minutes before reporting another message.'
+      :'I could not submit that report right now. Please contact staff if the situation is urgent.');
+    await message.delete().catch(()=>undefined);
+  }
+  return true;
+}
+
 async function handleMessage(message: Message, options: { directMentionEdit?: boolean } = {}) {
   if (!message.guildId || message.author.bot) return;
   const evidenceText=messageEvidenceText(message);
   if(!evidenceText) return;
   if (env.DISCORD_GUILD_ID && message.guildId !== env.DISCORD_GUILD_ID) return;
+
+  // A member report is an explicit request for human review, not an automatic
+  // moderation verdict. It works independently of channel monitoring settings.
+  if(!options.directMentionEdit&&await handleMemberReport(message)) return;
 
   // Private support tickets are self-contained conversations. Capture their
   // messages for the case transcript, then stop normal question/issue/moderation

@@ -46,6 +46,19 @@ export type ModerationDetection = {
   post_to_audit: boolean;
 };
 
+export type MemberModerationReport = {
+  case_id:number;
+  public_id:string;
+  rule_title:string;
+  confidence:number;
+  reason:string;
+  evidence:string;
+  created:boolean;
+  report_added:boolean;
+  report_count:number;
+  audit_channel_id:string|null;
+};
+
 type EligibleRule = {
   id: number;
   title: string;
@@ -698,13 +711,118 @@ confidence must be 0-1. evidence should quote or concisely identify the specific
   };
 }
 
+export async function reportModerationMessage(input:{
+  storedMessageId:number; guildId:string; channelId:string; channelName?:string|null; discordMessageId:string;
+  discordUserId:string; authorName:string; content:string; replyContext?:string|null;
+  reporterUserId:string; reporterName:string; commandMessageId:string;
+}):Promise<MemberModerationReport> {
+  const recentReports=await db.query(`
+    SELECT count(*)::int AS count
+      FROM moderation_reports
+     WHERE reporter_user_id=$1
+       AND created_at>NOW()-INTERVAL '10 minutes'`,[input.reporterUserId]);
+  if(Number(recentReports.rows[0]?.count||0)>=5) throw new Error('report_rate_limited');
+
+  const settings=await getModerationSettings();
+  const recent=await recentContext(input.channelId,input.storedMessageId);
+  const context=[input.replyContext?`DIRECT REPLY CONTEXT:\n${input.replyContext}`:'',recent?`RECENT MESSAGES:\n${recent}`:'']
+    .filter(Boolean).join('\n\n');
+  const rules=(await candidateRules(input.content)).filter(rule=>!rule.channel_ids.length||rule.channel_ids.includes(input.channelId));
+  const calibration=await trustedFalsePositiveExamples(rules.map(rule=>rule.id)).catch(()=>'(unavailable)');
+
+  let matchedRule:EligibleRule|null=null;
+  let confidence=0;
+  let reason='A member requested staff review. AI analysis was unavailable, so no rule match was assumed.';
+  let evidence='';
+  let assessment:z.infer<typeof aiResultSchema>|null=null;
+
+  if(client&&env.AI_ENABLED&&rules.length){
+    try{
+      const response=await client.responses.create({
+        model:env.AI_CLASSIFIER_MODEL,
+        reasoning:{effort:'low'},
+        instructions:`You are providing a neutral preliminary assessment of a Discord message that a community member reported. The report itself is not proof of a violation. Analyze the TARGET MESSAGE using the conversation and only the supplied VERIFIED DISCORD RULES. This is a gaming and roleplay community where profanity, competitive trash talk, jokes, sarcasm, roleplay, in-game violence, and gaming/media language may be benign. Do not invent intent, relationships, history, rules, or harm. If a reasonable benign interpretation remains, use matched=false. For harassment or toxicity, require clear unwanted targeting, personal abuse, discriminatory hostility, intimidation, or a supported sustained pattern. Return only compact JSON: {"matched":boolean,"rule_id":number|null,"confidence":number,"reason":string,"evidence":string,"context_kind":"explicit_violation|targeted_hostility|gaming_banter|gameplay_or_media|quoted_or_reported|ambiguous|other","harmful_targeting":boolean,"plausible_benign_interpretation":boolean}.`,
+        input:`RECENT CONVERSATION:\n${context||'(none)'}\n\nTARGET MESSAGE (${input.authorName}):\n${input.content.slice(0,4000)}\n\nVERIFIED DISCORD RULES:\n${rulesPrompt(rules)}\n\nSTAFF-DISMISSED FALSE POSITIVES:\n${calibration}`,
+        max_output_tokens:900
+      });
+      const raw=response.output_text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+      assessment=aiResultSchema.parse(JSON.parse(raw));
+      matchedRule=assessment.matched&&assessment.rule_id
+        ? rules.find(rule=>rule.id===Number(assessment!.rule_id))||null
+        : null;
+      confidence=matchedRule?clamp(Number(assessment.confidence),0,1):0;
+      reason=assessment.reason||'AI did not find a clear verified-rule match; staff review was still requested.';
+      evidence=assessment.evidence||'';
+    }catch(error){
+      reason=`A member requested staff review. AI analysis was unavailable: ${error instanceof Error?error.message:String(error)}`.slice(0,1200);
+    }
+  }else if(!rules.length){
+    reason='A member requested staff review. No applicable published Discord rule was available for an automatic match.';
+  }
+
+  const existing=await db.query('SELECT id,public_id FROM moderation_cases WHERE discord_message_id=$1 LIMIT 1',[input.storedMessageId]);
+  let caseId=existing.rowCount?Number(existing.rows[0].id):0;
+  let publicId=existing.rowCount?String(existing.rows[0].public_id||''):'';
+  let created=false;
+
+  if(!caseId){
+    const inserted=await db.query(`
+      INSERT INTO moderation_cases
+        (guild_id,channel_id,channel_name,message_id,discord_message_id,discord_user_id,author_name,message_content,
+         rule_article_id,rule_title,confidence,ai_reason,evidence,recommended_action,delete_message_recommended,
+         prior_confirmed_count,offense_number,repeat_window_days_used,action_ladder_snapshot,mode,status,source,
+         context_snapshot,staff_review_required,live_action_status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'staff_review',FALSE,0,1,$14,$15::jsonb,'observe','pending','member_report',$16,TRUE,'not_applicable')
+      ON CONFLICT (discord_message_id) DO NOTHING
+      RETURNING id`,[
+        input.guildId,input.channelId,input.channelName||null,input.discordMessageId,input.storedMessageId,input.discordUserId,input.authorName,input.content,
+        matchedRule?.id||null,matchedRule?.title||'Member report — staff review',confidence,String(reason).slice(0,1200),String(evidence).slice(0,500),
+        settings.repeat_window_days,JSON.stringify(normalizeActionLadder(null,'staff_review')),context||null
+      ]);
+    if(inserted.rowCount){caseId=Number(inserted.rows[0].id);created=true;}
+    else {
+      const raced=await db.query('SELECT id,public_id FROM moderation_cases WHERE discord_message_id=$1 LIMIT 1',[input.storedMessageId]);
+      if(!raced.rowCount) throw new Error('unable_to_create_report');
+      caseId=Number(raced.rows[0].id);publicId=String(raced.rows[0].public_id||'');
+    }
+  }
+
+  if(!publicId){
+    publicId=`MOD-${String(caseId).padStart(4,'0')}`;
+    await db.query('UPDATE moderation_cases SET public_id=COALESCE(public_id,$1) WHERE id=$2',[publicId,caseId]);
+  }
+
+  const report=await db.query(`
+    INSERT INTO moderation_reports (case_id,reporter_user_id,reporter_name,command_message_id)
+    VALUES ($1,$2,$3,$4)
+    ON CONFLICT (case_id,reporter_user_id) DO NOTHING
+    RETURNING id`,[caseId,input.reporterUserId,input.reporterName,input.commandMessageId]);
+
+  if(created){
+    await db.query(`INSERT INTO moderation_case_events (case_id,event_type,actor_user_id,details)
+      VALUES ($1,'detected',$2,$3::jsonb)`,[caseId,input.reporterUserId,JSON.stringify({
+        source:'member_report',reporter_name:input.reporterName,ai_matched:Boolean(matchedRule),
+        ai_context_kind:assessment?.context_kind||null,plausible_benign_interpretation:assessment?.plausible_benign_interpretation??null
+      })]);
+  }else if(report.rowCount){
+    await db.query(`INSERT INTO moderation_case_events (case_id,event_type,actor_user_id,details)
+      VALUES ($1,'note',$2,$3::jsonb)`,[caseId,input.reporterUserId,JSON.stringify({source:'additional_member_report',reporter_name:input.reporterName})]);
+  }
+
+  const count=await db.query('SELECT count(*)::int AS count FROM moderation_reports WHERE case_id=$1',[caseId]);
+  return {
+    case_id:caseId,public_id:publicId,rule_title:matchedRule?.title||'Member report — staff review',confidence,reason,evidence,
+    created,report_added:Boolean(report.rowCount),report_count:Number(count.rows[0]?.count||0),audit_channel_id:settings.audit_channel_id
+  };
+}
+
 export async function listModerationCases(input:{status?:string;userId?:string;limit?:number}={}) {
   const values:any[]=[]; const where:string[]=[];
   if(input.status && ['pending','confirmed','dismissed'].includes(input.status)){values.push(input.status);where.push(`c.status=$${values.length}`);}
   if(input.userId){values.push(input.userId);where.push(`c.discord_user_id=$${values.length}`);}
   values.push(clamp(Number(input.limit||200),1,500));
   const result=await db.query(`
-    SELECT c.* FROM moderation_cases c
+    SELECT c.*,(SELECT count(*)::int FROM moderation_reports mr WHERE mr.case_id=c.id) AS report_count FROM moderation_cases c
     ${where.length?'WHERE '+where.join(' AND '):''}
     ORDER BY CASE c.status WHEN 'pending' THEN 1 WHEN 'confirmed' THEN 2 ELSE 3 END,c.created_at DESC
     LIMIT $${values.length}`,values);
@@ -720,6 +838,7 @@ export async function listModerationCases(input:{status?:string;userId?:string;l
 export async function getModerationCase(caseId:number){
   const result=await db.query(`SELECT c.*,
     COALESCE((SELECT jsonb_agg(e ORDER BY e.created_at DESC) FROM moderation_case_events e WHERE e.case_id=c.id),'[]'::jsonb) AS events,
+    COALESCE((SELECT jsonb_agg(r ORDER BY r.created_at DESC) FROM moderation_reports r WHERE r.case_id=c.id),'[]'::jsonb) AS reports,
     (SELECT count(*)::int FROM moderation_cases u WHERE u.discord_user_id=c.discord_user_id AND u.status='confirmed') AS user_confirmed_total,
     (SELECT count(*)::int FROM moderation_cases u WHERE u.discord_user_id=c.discord_user_id AND u.status='dismissed') AS user_dismissed_total
     FROM moderation_cases c WHERE c.id=$1`,[caseId]);
