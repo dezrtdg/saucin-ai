@@ -1,4 +1,5 @@
 import { api } from './api';
+import { cache } from 'react';
 
 export type DashboardAccess = {
   authorized: boolean;
@@ -8,9 +9,9 @@ export type DashboardAccess = {
   source?: string;
 };
 
-export async function getDashboardAccess() {
-  return api<DashboardAccess>('/api/permissions/me');
-}
+// Layouts and pages frequently need the same permission snapshot. React's
+// request cache prevents a second API round trip during one render.
+export const getDashboardAccess = cache(async () => api<DashboardAccess>('/api/permissions/me'));
 
 export function can(access: DashboardAccess | null | undefined, permission: string) {
   return Boolean(access?.owner_bypass || access?.permissions?.includes(permission));

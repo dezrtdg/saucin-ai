@@ -39,7 +39,7 @@ export default function DashboardShell({children,serverName,user,permissions,own
 
   useEffect(()=>{
     void refresh();
-    const timer=window.setInterval(()=>{if(document.visibilityState==='visible')void refresh();},20_000);
+    const timer=window.setInterval(()=>{if(document.visibilityState==='visible')void refresh();},30_000);
     const visible=()=>{if(document.visibilityState==='visible')void refresh();};
     document.addEventListener('visibilitychange',visible);
     return()=>{window.clearInterval(timer);document.removeEventListener('visibilitychange',visible);};
@@ -69,7 +69,7 @@ export default function DashboardShell({children,serverName,user,permissions,own
     <aside className="consoleSidebar">
       <div className="consoleBrand"><img className="brandLogo" src="/saucin-rp-logo.png" alt="Saucin RP"/><div className="brandText"><strong>Saucin AI</strong><small>{serverName}</small></div><button className="mobileNavClose" onClick={()=>setMobileOpen(false)} aria-label="Close navigation">×</button></div>
       <SidebarNav permissions={permissions} ownerBypass={ownerBypass} badges={badges}/>
-      <div className={`sidebarStatus ${liveState}`}><span className="onlineDot"/><div><strong>{liveState==='live'?'Live':liveState==='offline'?'Connection issue':'Connecting'}</strong><small>{liveState==='live'?'updates every 20 seconds':liveState==='offline'?'trying again automatically':'checking activity'}</small></div></div>
+      <div className={`sidebarStatus ${liveState}`}><span className="onlineDot"/><div><strong>{liveState==='live'?'Live':liveState==='offline'?'Connection issue':'Connecting'}</strong><small>{liveState==='live'?'updates every 30 seconds':liveState==='offline'?'trying again automatically':'checking activity'}</small></div></div>
     </aside>
     <main className="consoleMain">
       <header className="consoleTopbar">
