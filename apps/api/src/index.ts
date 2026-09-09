@@ -8,6 +8,7 @@ import { adminRoutes } from './routes/admin.js';
 import { liveModerationRoutes } from './routes/liveModeration.js';
 import { suggestionRoutes } from './routes/suggestions.js';
 import { txAdminRoutes } from './routes/txadmin.js';
+import { resolutionRoutes } from './routes/resolution.js';
 import { backfillKnowledgeEmbeddings, consolidateOpenKnowledgeGaps } from './services/knowledge.js';
 import { backfillIssueEmbeddings } from './services/issues.js';
 import { backfillSuggestionEmbeddings } from './services/suggestions.js';
@@ -26,6 +27,7 @@ await app.register(adminRoutes);
 await app.register(liveModerationRoutes);
 await app.register(suggestionRoutes);
 await app.register(txAdminRoutes);
+await app.register(resolutionRoutes);
 
 app.get('/', async () => ({ service: 'Saucin AI API', version: '1.8.0' }));
 

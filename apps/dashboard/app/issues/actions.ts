@@ -22,6 +22,7 @@ function issuePayload(formData: FormData) {
     status: String(formData.get('status') || 'new'),
     public_response: String(formData.get('public_response') || '').trim() || undefined,
     workaround: String(formData.get('workaround') || '').trim() || undefined,
+    resolution_summary: String(formData.get('resolution_summary') || '').trim() || undefined,
     staff_notes: String(formData.get('staff_notes') || '').trim() || undefined,
     aliases: lines(formData.get('aliases')),
     symptoms: lines(formData.get('symptoms')),
@@ -42,6 +43,9 @@ export async function createIssueAction(formData: FormData) {
 export async function updateIssueAction(id: string, formData: FormData) {
   return runDashboardAction({fallbackPath:`/issues/${id}`,successMessage:'Issue saved.'},async()=>{
     await api(`/api/issues/${id}`, { method: 'PUT', body: JSON.stringify(issuePayload(formData)) });
+    await api(`/api/issues/${id}/resolution`,{method:'PUT',body:JSON.stringify({
+      resolution_summary:String(formData.get('resolution_summary')||'').trim()
+    })});
     revalidatePath('/issues');
     revalidatePath(`/issues/${id}`);
     return null;
@@ -61,6 +65,22 @@ export async function createIssueTicketAction(id: string) {
     await api(`/api/issues/${id}/discord-ticket`, { method: 'POST', body: '{}' });
     revalidatePath('/issues');
     revalidatePath(`/issues/${id}`);
+    return null;
+  });
+}
+
+export async function runIssueResolutionAction(id:string){
+  return runDashboardAction({fallbackPath:`/issues/${id}`,successMessage:'Resolution knowledge draft prepared.'},async()=>{
+    await api(`/api/issues/${id}/resolution-loop`,{method:'POST',body:'{}'});
+    revalidatePath('/issues');revalidatePath(`/issues/${id}`);revalidatePath('/knowledge');revalidatePath('/knowledge-gaps');revalidatePath('/automation');
+    return null;
+  });
+}
+
+export async function resolutionGapReviewAction(issueId:string,gapId:string,status:'linked'|'dismissed'){
+  return runDashboardAction({fallbackPath:`/issues/${issueId}`,successMessage:status==='linked'?'Knowledge gap linked to this resolution.':'Unrelated knowledge gap removed.'},async()=>{
+    await api(`/api/issues/${issueId}/resolution-gaps/${gapId}`,{method:'PUT',body:JSON.stringify({status})});
+    revalidatePath(`/issues/${issueId}`);revalidatePath('/knowledge-gaps');revalidatePath('/automation');
     return null;
   });
 }

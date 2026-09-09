@@ -75,6 +75,13 @@ async function queueRows(access:Access,includeReviewed=false){
       FROM (SELECT id,COALESCE(display_question,sample_question) AS question,topic,occurrences,status,last_seen FROM knowledge_gaps
         WHERE $4::boolean AND status='open' ORDER BY occurrences DESC,last_seen DESC LIMIT 40) g
       UNION ALL
+      SELECT 'knowledge','issue_resolution',r.id::text,to_jsonb(r)
+      FROM (SELECT i.id,i.public_id,i.title,i.resolution_summary,i.workaround,i.public_response,i.resolved_at,i.status,
+          i.resolution_article_id,(SELECT count(*)::int FROM issue_knowledge_gap_matches m WHERE m.issue_id=i.id AND m.review_status='suggested') AS suggested_gap_count
+        FROM issues i WHERE $4::boolean AND i.status='resolved' AND
+          (i.resolution_article_id IS NULL OR EXISTS(SELECT 1 FROM issue_knowledge_gap_matches m WHERE m.issue_id=i.id AND m.review_status='suggested'))
+        ORDER BY i.resolved_at DESC NULLS LAST,i.updated_at DESC LIMIT 30) r
+      UNION ALL
       SELECT 'moderation','moderation_case',m.id::text,to_jsonb(m)
       FROM (SELECT id,public_id,rule_title,author_name,message_content,confidence,status,source,created_at,
         (SELECT count(*)::int FROM moderation_reports r WHERE r.case_id=moderation_cases.id) AS report_count
@@ -97,7 +104,7 @@ async function queueRows(access:Access,includeReviewed=false){
   const items:QueueItem[]=[];
   const reviewed=(item:QueueItem,row:any)=>({...item,review_outcome:row.review_outcome||null,reviewed_at:row.reviewed_at?iso(row.reviewed_at):null});
   for(const resultRow of result.rows){
-    const row=resultRow.payload||{};const module=String(resultRow.module_key) as AutomationModuleKey;
+    const row=resultRow.payload||{};const module=String(resultRow.module_key) as AutomationModuleKey;const resourceType=String(resultRow.resource_type);
     if(module==='tickets'){
       const score=row.priority==='urgent'?100:row.priority==='high'?90:75;
       items.push(reviewed({key:`tickets:ticket:${row.id}`,module,resource_type:'ticket',resource_id:String(row.id),title:`${row.public_id||`Ticket ${row.id}`} · ${row.subject}`,detail:String(row.description||'').slice(0,280),reason:`Unclaimed ${row.priority} priority ticket.`,href:`/tickets/${row.id}`,priority:score>=95?'urgent':score>=85?'high':'normal',priority_score:score,created_at:iso(row.created_at),status:row.status},resultRow));
@@ -108,8 +115,13 @@ async function queueRows(access:Access,includeReviewed=false){
       const score=Math.min(82,58+Number(row.mention_count||1)*3);
       items.push(reviewed({key:`suggestions:suggestion:${row.id}`,module,resource_type:'suggestion',resource_id:String(row.id),title:`${row.public_id||`Suggestion ${row.id}`} · ${row.title}`,detail:String(row.summary||'').slice(0,280),reason:`${row.mention_count||1} community mention(s); ${row.status==='candidate'?'awaiting initial review':'currently under review'}.`,href:`/suggestions/${row.id}`,priority:score>=75?'high':'normal',priority_score:score,created_at:iso(row.last_seen),status:row.status},resultRow));
     }else if(module==='knowledge'){
-      const score=Math.min(80,45+Number(row.occurrences||1)*7);
-      items.push(reviewed({key:`knowledge:knowledge_gap:${row.id}`,module,resource_type:'knowledge_gap',resource_id:String(row.id),title:String(row.question).slice(0,180),detail:String(row.topic||'Missing verified server information.'),reason:`Asked ${row.occurrences||1} time(s) without a confident verified answer.`,href:'/knowledge-gaps?status=open',priority:score>=70?'high':score>=55?'normal':'low',priority_score:score,created_at:iso(row.last_seen),status:row.status},resultRow));
+      if(resourceType==='issue_resolution'){
+        const suggested=Number(row.suggested_gap_count||0);const score=row.resolution_article_id?68:74;
+        items.push(reviewed({key:`knowledge:issue_resolution:${row.id}`,module,resource_type:'issue_resolution',resource_id:String(row.id),title:`${row.public_id||`Issue ${row.id}`} · ${row.title}`,detail:String(row.resolution_summary||row.workaround||row.public_response||'Add the confirmed final fix before building reusable knowledge.').slice(0,280),reason:row.resolution_article_id?`${suggested} possible knowledge-gap match(es) need review.`:'Resolved issue has not completed the knowledge loop.',href:`/issues/${row.id}`,priority:score>=70?'high':'normal',priority_score:score,created_at:iso(row.resolved_at||new Date()),status:'resolution_review'},resultRow));
+      }else{
+        const score=Math.min(80,45+Number(row.occurrences||1)*7);
+        items.push(reviewed({key:`knowledge:knowledge_gap:${row.id}`,module,resource_type:'knowledge_gap',resource_id:String(row.id),title:String(row.question).slice(0,180),detail:String(row.topic||'Missing verified server information.'),reason:`Asked ${row.occurrences||1} time(s) without a confident verified answer.`,href:'/knowledge-gaps?status=open',priority:score>=70?'high':score>=55?'normal':'low',priority_score:score,created_at:iso(row.last_seen),status:row.status},resultRow));
+      }
     }else if(module==='moderation'){
       const reports=Number(row.report_count||0);const score=row.source==='member_report'?Math.min(100,88+reports*3):Math.min(92,68+Number(row.confidence||0)*20);
       items.push(reviewed({key:`moderation:moderation_case:${row.id}`,module,resource_type:'moderation_case',resource_id:String(row.id),title:`${row.public_id||`Case ${row.id}`} · ${row.rule_title}`,detail:`${row.author_name||'Member'}: ${String(row.message_content||'').slice(0,220)}`,reason:row.source==='member_report'?`${reports||1} member report(s); human review is required.`:`AI detection at ${Math.round(Number(row.confidence||0)*100)}% confidence; no trusted outcome yet.`,href:`/moderation/${row.id}`,priority:score>=95?'urgent':score>=84?'high':'normal',priority_score:score,created_at:iso(row.created_at),status:row.status},resultRow));
@@ -151,6 +163,8 @@ async function learningSnapshot(executor:{query:(text:string,values?:unknown[])=
         ? `SELECT COALESCE(title,'')||E'\n'||COALESCE(summary,'')||E'\n'||COALESCE(community_context,'') AS text,status,category,mention_count FROM suggestions WHERE id=$1`
         : input.resourceType==='knowledge_gap'
           ? `SELECT COALESCE(display_question,sample_question,'')||E'\n'||COALESCE(topic,'')||E'\n'||COALESCE(conversation_context,'') AS text,status,occurrences FROM knowledge_gaps WHERE id=$1`
+          : input.resourceType==='issue_resolution'
+            ? `SELECT COALESCE(title,'')||E'\n'||COALESCE(description,'')||E'\n'||COALESCE(resolution_summary,workaround,public_response,'') AS text,status,category,resource_name FROM issues WHERE id=$1`
           : input.resourceType==='moderation_case'
             ? `SELECT COALESCE(message_content,'')||E'\n'||COALESCE(context_snapshot,'') AS text,status,rule_article_id,rule_title,confidence FROM moderation_cases WHERE id=$1`
             : input.resourceType==='txadmin_event'
