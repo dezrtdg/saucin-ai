@@ -15,9 +15,11 @@ export async function updateAutomationModuleAction(module:ModuleKey,formData:For
 }
 
 export async function automationFeedbackAction(module:ModuleKey,resourceType:string,resourceId:string,outcome:Outcome,formData?:FormData){
-  return runDashboardAction({fallbackPath:'/automation',successMessage:outcome==='reopened'?'Item returned to the inbox.':outcome==='incorrect'?'Correction saved.':'Item marked reviewed.'},async()=>{
+  return runDashboardAction({fallbackPath:'/automation',successMessage:outcome==='reopened'?'Item returned to the inbox.':outcome==='incorrect'?'Correction saved for future decisions.':outcome==='helpful'?'Decision confirmed for future calibration.':'Item marked reviewed.'},async()=>{
     await api('/api/automation/feedback',{method:'POST',body:JSON.stringify({
-      module,resource_type:resourceType,resource_id:resourceId,outcome,note:String(formData?.get('note')||'').trim()
+      module,resource_type:resourceType,resource_id:resourceId,outcome,note:String(formData?.get('note')||'').trim(),
+      corrected_module:String(formData?.get('corrected_module')||'').trim()||null,
+      corrected_priority:String(formData?.get('corrected_priority')||'').trim()||null
     })});
     revalidatePath('/automation');return null;
   });

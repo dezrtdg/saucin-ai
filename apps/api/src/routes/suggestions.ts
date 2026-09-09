@@ -12,6 +12,7 @@ import {
   syncSuggestionDiscordPost
 } from '../discord/client.js';
 import { allPermissionKeys,parseDashboardIdentity,permissionSnapshot } from '../services/permissions.js';
+import { upsertLearningExample } from '../services/learning.js';
 import {
   buildSuggestionDraft,
   buildSuggestionStaffReply,
@@ -232,6 +233,13 @@ export async function suggestionRoutes(app:FastifyInstance){
     if(!before) return reply.code(404).send({error:'suggestion not found'});
     const suggestion=await updateSuggestion(params.id,{...body,staff_notes:body.staff_notes||'',changed_by:actorLabel(request)});
     if(!suggestion) return reply.code(404).send({error:'suggestion not found'});
+    if(String(before.category||'general')!==String(suggestion.category||'general')){
+      await upsertLearningExample({module:'suggestions',decisionType:'category',resourceType:'suggestion',resourceId:String(params.id),
+        inputText:`${before.title||''}\n${before.summary||''}\n${before.community_context||''}`,
+        predictedValue:String(before.category||'general'),correctedValue:String(suggestion.category||'general'),
+        staffNote:`Staff changed the suggestion category from ${before.category||'general'} to ${suggestion.category||'general'}.`,
+        metadata:{status:suggestion.status},actorUserId:actorId(request)}).catch(error=>request.log.warn({error},'suggestion category calibration failed'));
+    }
     await ensureSuggestionDiscordThread(params.id).catch(error=>request.log.warn({error},'suggestion forum creation failed'));
     await syncSuggestionDiscordPost(params.id).catch(error=>request.log.warn({error},'suggestion forum synchronization failed'));
     if(String(before.status)!==String(suggestion.status)){

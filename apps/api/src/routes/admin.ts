@@ -13,6 +13,7 @@ import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishmen
 import { getDashboardNotifications, markDashboardNotificationsRead } from '../services/dashboardNotifications.js';
 import { acknowledgeTxAdminEvent, correlateIssueWithTxAdmin, getTxAdminOverview, getTxAdminSettings, listTxAdminEvents, resolveTxAdminEvent, updateTxAdminSettings } from '../services/txadmin.js';
 import { getAutomationCenter, recordAutomationFeedback, updateAutomationModuleSetting } from '../services/automation.js';
+import { upsertLearningExample } from '../services/learning.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -401,12 +402,15 @@ export async function adminRoutes(app: FastifyInstance) {
       const body=z.object({
         module:z.enum(['tickets','issues','suggestions','knowledge','moderation','txadmin']),
         resource_type:z.string().trim().min(1).max(80),resource_id:z.string().trim().min(1).max(160),
-        outcome:z.enum(['reviewed','helpful','incorrect','reopened']),note:z.string().trim().max(2000).optional()
+        outcome:z.enum(['reviewed','helpful','incorrect','reopened']),note:z.string().trim().max(2000).optional(),
+        corrected_module:z.enum(['tickets','issues','suggestions','knowledge','moderation','txadmin']).nullable().optional(),
+        corrected_priority:z.enum(['urgent','high','normal','low']).nullable().optional()
       }).parse(request.body);
       if(body.resource_type==='txadmin_match'&&!(await requireAdditionalPermission(request,reply,'txadmin.manage')))return;
       const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
       try{return await recordAutomationFeedback({module:body.module,resourceType:body.resource_type,resourceId:body.resource_id,
-        outcome:body.outcome,note:body.note,actorUserId:identity.userId||null});}
+        outcome:body.outcome,note:body.note,actorUserId:identity.userId||null,
+        correctedModule:body.corrected_module||null,correctedPriority:body.corrected_priority||null});}
       catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Unable to save automation feedback.'});}
     });
 
@@ -1561,7 +1565,7 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
       const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
       const body = issueBody.parse(request.body);
       if (!(await assertIssueCategoryExists(body.category, reply))) return;
-      const before = await db.query('SELECT status,severity,public_response,workaround FROM issues WHERE id=$1', [params.id]);
+      const before = await db.query('SELECT status,severity,public_response,workaround,category,title,description,resource_name FROM issues WHERE id=$1', [params.id]);
       if (!before.rowCount) return reply.code(404).send({ error: 'issue not found' });
       if (before.rows[0].status !== body.status && !(await requireAdditionalPermission(request, reply, 'issues.status'))) return;
       const result = await db.query(
@@ -1575,6 +1579,15 @@ ${stored.rows.map((message: any) => `${message.author_name || 'User'}: ${message
       );
       if (!result.rowCount) return reply.code(404).send({ error: 'issue not found' });
       const previous = before.rows[0];
+      if(String(previous.category||'general')!==String(body.category||'general')){
+        const identity=parseDashboardIdentity(request.headers as Record<string,unknown>);
+        await upsertLearningExample({module:'issues',decisionType:'category',resourceType:'issue',resourceId:String(params.id),
+          inputText:`${previous.title||''}\n${previous.description||''}\n${previous.resource_name||''}`,
+          predictedValue:String(previous.category||'general'),correctedValue:String(body.category||'general'),
+          staffNote:`Staff changed the issue category from ${previous.category||'general'} to ${body.category||'general'}.`,
+          metadata:{severity:body.severity,status:body.status},actorUserId:identity.userId||null})
+          .catch(error=>request.log.warn({error},'issue category calibration failed'));
+      }
       const updates: Array<[string,string | null,string | null,string | null]> = [];
       if (previous.status !== body.status) updates.push(['status', previous.status, body.status, null]);
       if (previous.severity !== body.severity) updates.push(['severity', previous.severity, body.severity, null]);

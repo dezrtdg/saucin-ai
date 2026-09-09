@@ -328,7 +328,17 @@ function correlationTokens(value:string){
 
 function normalizedResource(value:unknown){return String(value||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
 
-function scoreIssueEvent(issue:any,event:any){
+type TxAdminMatchCalibration={review_status:'confirmed'|'dismissed';issue_resource:string;event_resource:string};
+
+async function txAdminMatchCalibration():Promise<TxAdminMatchCalibration[]>{
+  const result=await db.query(`SELECT l.review_status,COALESCE(i.resource_name,'') AS issue_resource,COALESCE(e.resource_name,'') AS event_resource
+    FROM issue_txadmin_links l JOIN issues i ON i.id=l.issue_id JOIN service_events e ON e.id=l.service_event_id
+    WHERE l.review_status IN ('confirmed','dismissed') AND i.resource_name IS NOT NULL AND e.resource_name IS NOT NULL
+    ORDER BY l.reviewed_at DESC NULLS LAST LIMIT 250`);
+  return result.rows.map(row=>({review_status:row.review_status,issue_resource:normalizedResource(row.issue_resource),event_resource:normalizedResource(row.event_resource)}));
+}
+
+function scoreIssueEvent(issue:any,event:any,calibration:TxAdminMatchCalibration[]=[]){
   const issueParts=[issue.title,issue.description,issue.category,issue.resource_name,...(issue.aliases||[]),...(issue.symptoms||[])].filter(Boolean).map(String);
   const eventText=`${event.resource_name||''} ${event.message||''} ${event.event_type||''}`.toLowerCase();
   const compactEvent=normalizedResource(eventText);
@@ -358,6 +368,17 @@ function scoreIssueEvent(issue:any,event:any){
     matchTypes.push(resourceHits.length?'resource term':'issue term');
   }
 
+  // Reuse only exact staff-reviewed resource pairs. This safely generalizes a
+  // confirmed or dismissed match without treating loosely similar logs as fact.
+  const learned=issueResource&&eventResource
+    ? calibration.find(row=>row.issue_resource===issueResource&&row.event_resource===eventResource)
+    : null;
+  if(learned?.review_status==='confirmed'){
+    score=Math.max(score,.97);matchTypes.push('staff-confirmed resource pair');
+  }else if(learned?.review_status==='dismissed'){
+    score=Math.min(score,.39);matchTypes.push('staff-dismissed resource pair');
+  }
+
   if(score>=.5&&new Date(event.last_seen_at).getTime()>=Date.now()-7*24*60*60*1000)score=Math.min(.99,score+.03);
   const distinctTypes=[...new Set(matchTypes)];
   const reason=distinctTypes.length
@@ -377,7 +398,7 @@ async function saveIssueEventLink(issueId:number,eventId:number,match:{score:num
 }
 
 export async function correlateIssueWithTxAdmin(issueId:number,minConfidence?:number){
-  const [issueResult,settingsResult,automationResult,eventsResult]=await Promise.all([
+  const [issueResult,settingsResult,automationResult,eventsResult,calibration]=await Promise.all([
     db.query(`SELECT id,title,description,category,resource_name,aliases,symptoms,log_patterns FROM issues WHERE id=$1`,[issueId]),
     db.query(`SELECT auto_link_issue_reports,correlation_min_confidence FROM txadmin_settings WHERE id=1`),
     db.query(`SELECT autonomy_level FROM automation_module_settings WHERE module_key='txadmin'`),
@@ -386,36 +407,38 @@ export async function correlateIssueWithTxAdmin(issueId:number,minConfidence?:nu
                WHERE source='txadmin' AND actionable=TRUE AND attention_kind<>'update_available'
                  AND last_seen_at>NOW()-INTERVAL '30 days' AND (matched_issue_id IS NULL OR matched_issue_id=$1)
                  AND NOT EXISTS (SELECT 1 FROM issue_txadmin_links l WHERE l.issue_id=$1 AND l.service_event_id=service_events.id)
-               ORDER BY last_seen_at DESC LIMIT 300`,[issueId])
+               ORDER BY last_seen_at DESC LIMIT 300`,[issueId]),
+    txAdminMatchCalibration()
   ]);
   if(!issueResult.rowCount)return {linked:0};
   const setting=settingsResult.rows[0]||{};
   if(setting.auto_link_issue_reports===false||automationResult.rows[0]?.autonomy_level!=='auto_safe')return {linked:0};
   const threshold=Math.min(.95,Math.max(.4,Number(minConfidence??setting.correlation_min_confidence??.55)));
-  const scored=eventsResult.rows.map(event=>({event,match:scoreIssueEvent(issueResult.rows[0],event)}))
+  const scored=eventsResult.rows.map(event=>({event,match:scoreIssueEvent(issueResult.rows[0],event,calibration)}))
     .filter(item=>item.match.score>=threshold).sort((a,b)=>b.match.score-a.match.score).slice(0,12);
   for(const item of scored)await saveIssueEventLink(issueId,Number(item.event.id),item.match);
   return {linked:scored.length};
 }
 
 export async function correlateTxAdminEvent(eventId:number,minConfidence?:number){
-  const [eventResult,settingsResult,automationResult,issuesResult]=await Promise.all([
+  const [eventResult,settingsResult,automationResult,issuesResult,calibration]=await Promise.all([
     db.query(`SELECT id,event_type,category,resource_name,message,last_seen_at,attention_kind,actionable,matched_issue_id
                 FROM service_events WHERE id=$1 AND source='txadmin'`,[eventId]),
     db.query(`SELECT auto_link_issue_reports,correlation_min_confidence FROM txadmin_settings WHERE id=1`),
     db.query(`SELECT autonomy_level FROM automation_module_settings WHERE module_key='txadmin'`),
     db.query(`SELECT id,title,description,category,resource_name,aliases,symptoms,log_patterns
-                FROM issues WHERE status NOT IN ('resolved','wont_fix') ORDER BY last_seen DESC LIMIT 400`)
+                FROM issues WHERE status NOT IN ('resolved','wont_fix') ORDER BY last_seen DESC LIMIT 400`),
+    txAdminMatchCalibration()
   ]);
   const event=eventResult.rows[0];const setting=settingsResult.rows[0]||{};
   if(!event||!event.actionable||event.attention_kind==='update_available'||setting.auto_link_issue_reports===false||automationResult.rows[0]?.autonomy_level!=='auto_safe')return null;
   if(event.matched_issue_id){
     const issue=issuesResult.rows.find(row=>Number(row.id)===Number(event.matched_issue_id));
-    if(issue){const match=scoreIssueEvent(issue,event);await saveIssueEventLink(Number(issue.id),eventId,{...match,score:Math.max(.99,match.score),matchTypes:[...new Set(['known log pattern',...match.matchTypes])],reason:'Matched an existing known-issue log pattern.'});}
+    if(issue){const match=scoreIssueEvent(issue,event,calibration);await saveIssueEventLink(Number(issue.id),eventId,{...match,score:Math.max(.99,match.score),matchTypes:[...new Set(['known log pattern',...match.matchTypes])],reason:'Matched an existing known-issue log pattern.'});}
     return event.matched_issue_id;
   }
   const threshold=Math.min(.95,Math.max(.4,Number(minConfidence??setting.correlation_min_confidence??.55)));
-  const best=issuesResult.rows.map(issue=>({issue,match:scoreIssueEvent(issue,event)})).sort((a,b)=>b.match.score-a.match.score)[0];
+  const best=issuesResult.rows.map(issue=>({issue,match:scoreIssueEvent(issue,event,calibration)})).sort((a,b)=>b.match.score-a.match.score)[0];
   if(!best||best.match.score<threshold)return null;
   await saveIssueEventLink(Number(best.issue.id),eventId,best.match);
   return Number(best.issue.id);

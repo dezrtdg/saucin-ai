@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { db } from '../db.js';
 import { env } from '../env.js';
+import { categoryCalibrationPrompt } from './learning.js';
 
 export type SuggestionQueryPlan = {
   original: string;
@@ -63,6 +64,7 @@ export async function buildSuggestionDraft(input:{
   const sourceText=String(input.sourceText||'').trim();
   if(sourceText.length<8) throw new Error('Provide more information before asking AI to develop this suggestion.');
   if(!client||!env.AI_ENABLED) throw new Error('AI suggestion authoring is unavailable because AI is disabled or no OpenAI API key is configured.');
+  const calibration=await categoryCalibrationPrompt('suggestions',sourceText).catch(()=>'(unavailable)');
 
   const response=await client.responses.create({
     model:env.AI_REPLY_MODEL,
@@ -83,7 +85,8 @@ GROUNDING RULES:
       input.existingSummary?`EXISTING SUMMARY:\n${input.existingSummary}`:'',
       input.existingCategory?`EXISTING CATEGORY: ${input.existingCategory}`:'',
       input.existingRelatedTerms?.length?`EXISTING RELATED TERMS: ${input.existingRelatedTerms.join(', ')}`:'',
-      `SOURCE MATERIAL:\n${sourceText.slice(0,18000)}`
+      `SOURCE MATERIAL:\n${sourceText.slice(0,18000)}`,
+      `TRUSTED STAFF CATEGORY EXAMPLES (calibration only):\n${calibration}`
     ].filter(Boolean).join('\n\n'),
     max_output_tokens:1400
   });
@@ -216,6 +219,7 @@ type SuggestionThreadAnalysis={
 async function analyzeSuggestionThread(suggestion:any,newContent:string):Promise<SuggestionThreadAnalysis|null>{
   if(!client||!env.AI_ENABLED) return null;
   try{
+    const calibration=await categoryCalibrationPrompt('suggestions',`${suggestion.title} ${suggestion.summary} ${newContent}`).catch(()=>'(unavailable)');
     const response=await client.responses.create({
       model:env.AI_REPLY_MODEL,
       reasoning:{effort:'low'},
@@ -227,8 +231,9 @@ GROUNDING RULES:
 - community_context is a concise running summary of useful examples, links, requested behavior, concerns, clarifications, and open questions.
 - refined_title and refined_summary may clarify what the idea really is when later context corrects the initial interpretation.
 - category must be one concise lowercase label such as roleplay, jobs-economy, vehicles, housing-map, police-ems, crime, items-inventory, quality-of-life, community, or general.
-- related_terms should include broad phrases that help recognize differently worded versions of the same idea.`,
-      input:`CURRENT TITLE: ${suggestion.title}\nCURRENT SUMMARY: ${suggestion.summary}\nCURRENT CATEGORY: ${suggestion.category}\nCURRENT RELATED TERMS: ${(suggestion.related_terms||[]).join(', ')}\nEXISTING COMMUNITY CONTEXT: ${suggestion.community_context||'(none)'}\nNEW FORUM MESSAGE: ${newContent.slice(0,5000)}`,
+- related_terms should include broad phrases that help recognize differently worded versions of the same idea.
+- Trusted staff category examples are calibration only. Apply them only when the current idea is genuinely analogous.`,
+      input:`CURRENT TITLE: ${suggestion.title}\nCURRENT SUMMARY: ${suggestion.summary}\nCURRENT CATEGORY: ${suggestion.category}\nCURRENT RELATED TERMS: ${(suggestion.related_terms||[]).join(', ')}\nEXISTING COMMUNITY CONTEXT: ${suggestion.community_context||'(none)'}\nNEW FORUM MESSAGE: ${newContent.slice(0,5000)}\n\nTRUSTED STAFF CATEGORY EXAMPLES:\n${calibration}`,
       max_output_tokens:900
     });
     const jsonText=response.output_text.trim().replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`$/,'');

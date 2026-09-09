@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import { db } from '../db.js';
 import { env } from '../env.js';
 import { correlateIssueWithTxAdmin } from './txadmin.js';
+import { categoryCalibrationPrompt } from './learning.js';
 
 export type IssueQueryPlan = {
   original: string;
@@ -710,6 +711,7 @@ export async function buildIssueDraft(input: {
   const fallbackCategory = categoryKeys.includes(input.categoryHint || '') ? String(input.categoryHint) : (categoryKeys.includes('general') ? 'general' : (categoryKeys[0] || 'general'));
   const severities = ['low','medium','high','critical'];
   const fallbackSeverity = severities.includes(String(input.severityHint || '')) ? String(input.severityHint) : 'medium';
+  const calibration=await categoryCalibrationPrompt('issues',sourceText,categoryKeys).catch(()=>'(unavailable)');
 
   const response = await client.responses.create({
     model: env.AI_REPLY_MODEL,
@@ -727,6 +729,7 @@ ACCURACY / SAFETY RULES:
 - symptoms may normalize observed player-facing symptoms that are actually present in the source.
 - severity may be inferred conservatively from the impact described. If impact is unclear, use the supplied hint or medium.
 - Select exactly one category from the allowed category keys.
+- Trusted staff category examples are calibration only. Apply them only when the current issue is genuinely analogous.
 - authoring_note is a short staff-facing review note calling out uncertainties or missing information; empty string if none.
 - staff_notes may preserve concise internal clues from the supplied source, but must not state speculation as fact.
 
@@ -739,7 +742,8 @@ low, medium, high, critical`,
       input.categoryHint ? `CATEGORY HINT: ${input.categoryHint}` : '',
       input.resourceHint ? `RESOURCE HINT: ${input.resourceHint}` : '',
       input.severityHint ? `SEVERITY HINT: ${input.severityHint}` : '',
-      `STAFF-SUPPLIED ISSUE EVIDENCE:\n${sourceText.slice(0,18000)}`
+      `STAFF-SUPPLIED ISSUE EVIDENCE:\n${sourceText.slice(0,18000)}`,
+      `TRUSTED STAFF CATEGORY EXAMPLES:\n${calibration}`
     ].filter(Boolean).join('\n\n'),
     max_output_tokens: 1600
   });

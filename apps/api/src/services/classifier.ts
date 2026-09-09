@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { env } from '../env.js';
+import { routingCalibrationPrompt } from './learning.js';
 
 export type Intent = 'question' | 'issue' | 'suggestion' | 'casual' | 'staff_request' | 'unknown';
 export type Classification = {
@@ -77,6 +78,7 @@ export async function classifyMessage(content: string): Promise<Classification> 
   if (!client || !env.AI_ENABLED) return fallback(content);
 
   try {
+    const calibration=await routingCalibrationPrompt(content).catch(()=>'(unavailable)');
     const response = await client.responses.create({
       model: env.AI_CLASSIFIER_MODEL,
       reasoning: { effort: 'low' },
@@ -88,8 +90,13 @@ RESPONSE GATE:
 - Also use casual/false for conversational follow-ups, questions aimed at a named or mentioned player, and messages inside an active player conversation unless the bot is directly addressed or the message independently and clearly reports an issue or suggestion.
 - Do not classify an information question as an issue merely because it says an item "doesn't do anything". If the main request asks where or how to obtain/use something, keep it a question unless the player clearly reports expected functionality failing.
 
+TRUSTED STAFF CALIBRATION:
+- Staff-reviewed examples below are guidance for genuinely analogous messages, not rules and not facts.
+- Prefer the staff-confirmed route when both intent and context are meaningfully similar.
+- Do not copy a prior outcome onto a message with materially different wording, target, or conversational context.
+
 Detect indirect questions, casual issue reports such as "anyone else having this problem?", and casual suggestions even when explicit keywords are absent. For questions, infer what the player is actually trying to do, not only the words they used. Expand implied concepts and common roleplay/server terminology. Example: "can i collect my inventory when i die" should include concepts such as death, respawn, NLR/new life rule, returning to scene, inventory recovery, dropped items, belongings. searchTerms should contain 4-15 concise retrieval terms/phrases and relatedTopics should contain 1-8 broader concepts. Do not invent a server rule or answer; only expand retrieval meaning. confidence must be 0 to 1.`,
-      input: content,
+      input: `CURRENT MESSAGE TO CLASSIFY:\n${content}\n\nTRUSTED STAFF ROUTING EXAMPLES (calibration only, not conversation):\n${calibration}`,
       max_output_tokens: 320
     });
     const jsonText = response.output_text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');

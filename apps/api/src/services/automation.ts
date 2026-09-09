@@ -1,4 +1,5 @@
 import { db } from '../db.js';
+import { applyPriorityCalibration,getLearningStats,upsertLearningExample } from './learning.js';
 
 export type AutomationModuleKey='tickets'|'issues'|'suggestions'|'knowledge'|'moderation'|'txadmin';
 export type AutonomyLevel='off'|'observe'|'assist'|'auto_safe';
@@ -121,16 +122,48 @@ async function queueRows(access:Access,includeReviewed=false){
 }
 
 export async function getAutomationCenter(input:{access:Access;includeReviewed?:boolean}){
-  const [modules,items]=await Promise.all([getAutomationModuleSettings(),queueRows(input.access,Boolean(input.includeReviewed))]);
+  const [modules,items,learning]=await Promise.all([
+    getAutomationModuleSettings(),queueRows(input.access,Boolean(input.includeReviewed)),getLearningStats()
+  ]);
   const moduleMap=new Map(modules.map(module=>[module.key,module]));
-  const visible=items.filter(item=>moduleMap.get(item.module)?.autonomy_level!=='off')
+  const calibrated=await applyPriorityCalibration(items);
+  const visible=calibrated.filter(item=>moduleMap.get(item.module)?.autonomy_level!=='off')
     .sort((a,b)=>b.priority_score-a.priority_score||new Date(b.created_at).getTime()-new Date(a.created_at).getTime());
   const counts=Object.fromEntries((Object.keys(moduleCatalog) as AutomationModuleKey[]).map(key=>[key,visible.filter(item=>item.module===key).length]));
-  return {generated_at:new Date().toISOString(),modules:modules.filter(module=>allowed(input.access,module.permission)),items:visible.slice(0,200),counts,total:visible.length};
+  return {generated_at:new Date().toISOString(),modules:modules.filter(module=>allowed(input.access,module.permission)),items:visible.slice(0,200),counts,total:visible.length,learning};
+}
+
+async function learningSnapshot(executor:{query:(text:string,values?:unknown[])=>Promise<any>},input:{module:AutomationModuleKey;resourceType:string;resourceId:string}){
+  if(input.resourceType==='txadmin_match'){
+    const [issueText,eventText]=input.resourceId.split(':');
+    const result=await executor.query(`SELECT i.title,i.description,i.category,i.resource_name AS issue_resource,
+      e.resource_name AS event_resource,e.message,e.event_type,e.attention_kind
+      FROM issues i JOIN service_events e ON e.id=$2 WHERE i.id=$1`,[Number(issueText),Number(eventText)]);
+    const row=result.rows[0];if(!row)return null;
+    return {text:`Issue: ${row.title}\n${row.description||''}\nIssue resource: ${row.issue_resource||''}\nServer event: ${row.event_resource||''} ${row.message||''}`,
+      metadata:{issue_resource:row.issue_resource||null,event_resource:row.event_resource||null,event_type:row.event_type,attention_kind:row.attention_kind}};
+  }
+  const query=input.resourceType==='ticket'
+    ? `SELECT subject||E'\n'||COALESCE(description,'') AS text,priority,status FROM tickets WHERE id=$1`
+    : input.resourceType==='issue_candidate'
+      ? `SELECT COALESCE(topic,'')||E'\n'||COALESCE(sample_text,'') AS text,status,occurrence_count,confirmed_count FROM issue_candidates WHERE id=$1`
+      : input.resourceType==='suggestion'
+        ? `SELECT COALESCE(title,'')||E'\n'||COALESCE(summary,'')||E'\n'||COALESCE(community_context,'') AS text,status,category,mention_count FROM suggestions WHERE id=$1`
+        : input.resourceType==='knowledge_gap'
+          ? `SELECT COALESCE(display_question,sample_question,'')||E'\n'||COALESCE(topic,'')||E'\n'||COALESCE(conversation_context,'') AS text,status,occurrences FROM knowledge_gaps WHERE id=$1`
+          : input.resourceType==='moderation_case'
+            ? `SELECT COALESCE(message_content,'')||E'\n'||COALESCE(context_snapshot,'') AS text,status,rule_article_id,rule_title,confidence FROM moderation_cases WHERE id=$1`
+            : input.resourceType==='txadmin_event'
+              ? `SELECT COALESCE(resource_name,'')||E'\n'||COALESCE(message,'') AS text,status,event_type,attention_kind,severity FROM service_events WHERE id=$1`
+              : null;
+  if(!query)return null;
+  const result=await executor.query(query,[Number(input.resourceId)]);const row=result.rows[0];
+  if(!row)return null;const {text,...metadata}=row;return {text:String(text||''),metadata};
 }
 
 export async function recordAutomationFeedback(input:{
   module:AutomationModuleKey;resourceType:string;resourceId:string;outcome:AutomationFeedbackOutcome;note?:string;actorUserId:string|null;
+  correctedModule?:AutomationModuleKey|null;correctedPriority?:'urgent'|'high'|'normal'|'low'|null;
 }){
   const client=await db.connect();
   try{
@@ -153,6 +186,32 @@ export async function recordAutomationFeedback(input:{
         await client.query(`UPDATE issue_txadmin_links SET review_status='dismissed',reviewed_by_user_id=$3,reviewed_at=NOW()
           WHERE issue_id=$1 AND service_event_id=$2`,[issueId,eventId,input.actorUserId]);
         await client.query(`UPDATE service_events SET matched_issue_id=NULL WHERE id=$2 AND matched_issue_id=$1`,[issueId,eventId]);
+      }
+    }
+    if(input.outcome==='helpful'||input.outcome==='incorrect'){
+      const snapshot=await learningSnapshot(client,input);
+      if(snapshot){
+        if(input.resourceType==='txadmin_match'){
+          await upsertLearningExample({module:'txadmin',decisionType:'txadmin_match',resourceType:input.resourceType,resourceId:input.resourceId,
+            inputText:snapshot.text,predictedValue:'suggested',correctedValue:input.outcome==='helpful'?'confirmed':'dismissed',
+            staffNote:input.note,metadata:snapshot.metadata,actorUserId:input.actorUserId},client);
+        }else{
+          if(input.outcome==='helpful'||input.correctedModule){
+            await upsertLearningExample({module:input.module,decisionType:'routing',resourceType:input.resourceType,resourceId:input.resourceId,
+              inputText:snapshot.text,predictedValue:input.module,correctedValue:input.correctedModule||input.module,
+              staffNote:input.note,metadata:snapshot.metadata,actorUserId:input.actorUserId},client);
+          }
+          if(input.correctedPriority){
+            await upsertLearningExample({module:input.module,decisionType:'priority',resourceType:input.resourceType,resourceId:input.resourceId,
+              inputText:snapshot.text,predictedValue:'automatic',correctedValue:input.correctedPriority,
+              staffNote:input.note,metadata:snapshot.metadata,actorUserId:input.actorUserId},client);
+          }
+          if(input.outcome==='incorrect'&&!input.correctedModule&&!input.correctedPriority){
+            await upsertLearningExample({module:input.module,decisionType:'general',resourceType:input.resourceType,resourceId:input.resourceId,
+              inputText:snapshot.text,predictedValue:input.module,correctedValue:'staff correction',
+              staffNote:input.note,metadata:snapshot.metadata,actorUserId:input.actorUserId},client);
+          }
+        }
       }
     }
     await client.query(`INSERT INTO automation_feedback_events(module_key,resource_type,resource_id,outcome,note,actor_user_id)

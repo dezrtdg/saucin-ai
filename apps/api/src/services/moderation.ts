@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { env } from '../env.js';
+import { upsertLearningExample } from './learning.js';
 
 const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
@@ -445,8 +446,10 @@ async function trustedFalsePositiveExamples(ruleIds:number[]) {
   if(!ruleIds.length) return '(none available)';
   const result=await db.query(`
     SELECT rule_title,message_content,context_snapshot
-      FROM moderation_trusted_calibration_examples
-     WHERE staff_outcome='dismissed'
+      FROM moderation_cases
+     WHERE status='dismissed'
+       AND reviewed_by_user_id IS NOT NULL
+       AND reviewed_by_user_id<>'saucin-ai-live'
        AND rule_article_id=ANY($1::bigint[])
      ORDER BY reviewed_at DESC NULLS LAST
      LIMIT 8`,[ruleIds]);
@@ -846,7 +849,7 @@ export async function getModerationCase(caseId:number){
 }
 
 export async function reviewModerationCase(caseId:number,input:{status:'pending'|'confirmed'|'dismissed';notes?:string|null;actorUserId?:string|null}){
-  const before=await db.query('SELECT status FROM moderation_cases WHERE id=$1',[caseId]);
+  const before=await db.query('SELECT status,rule_article_id,rule_title,message_content,context_snapshot,confidence FROM moderation_cases WHERE id=$1',[caseId]);
   if(!before.rowCount) return null;
   const result=await db.query(`UPDATE moderation_cases SET status=$1,review_notes=$2,reviewed_by_user_id=$3,
     reviewed_at=CASE WHEN $1='pending' THEN NULL ELSE NOW() END,updated_at=NOW() WHERE id=$4 RETURNING *`,
@@ -855,6 +858,13 @@ export async function reviewModerationCase(caseId:number,input:{status:'pending'
   const eventType=input.status==='pending'?'reopened':input.status;
   await db.query(`INSERT INTO moderation_case_events (case_id,event_type,actor_user_id,details) VALUES ($1,$2,$3,$4::jsonb)`,
     [caseId,eventType,input.actorUserId||null,JSON.stringify({from:oldStatus,to:input.status,notes:input.notes?.trim()||null})]);
+  if(input.status!=='pending'){
+    const row=before.rows[0];
+    await upsertLearningExample({module:'moderation',decisionType:'moderation',resourceType:'moderation_case',resourceId:String(caseId),
+      inputText:`${row.message_content||''}\n${row.context_snapshot||''}`,predictedValue:String(row.rule_title||row.rule_article_id||'possible violation'),
+      correctedValue:input.status,staffNote:input.notes||'',metadata:{rule_article_id:row.rule_article_id||null,confidence:Number(row.confidence||0)},
+      actorUserId:input.actorUserId||null});
+  }
   return result.rows[0];
 }
 
