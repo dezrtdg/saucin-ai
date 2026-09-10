@@ -50,6 +50,7 @@ import {
   countOpenTicketsForUser,
   createPunishmentRecord,
   createTicketRecord,
+  dueTicketFollowups,
   expiringPunishments,
   failTicketCreation,
   getPunishment,
@@ -61,6 +62,7 @@ import {
   markPunishmentFailed,
   markPunishmentReversed,
   markTicketChannelDeleted,
+  recordTicketFollowup,
   releaseTicket,
   reopenTicketRecord,
   resumeTicketAfterUserReply,
@@ -1339,6 +1341,49 @@ export async function reverseTicketPunishment(punishmentId:number,actor:{userId:
 let ticketMaintenanceTimer:NodeJS.Timeout|null=null;
 let ticketMaintenanceRunning=false;
 
+async function runTicketFollowups(){
+  const due=await dueTicketFollowups(50);
+  for(const followup of due){
+    const kind=String(followup.followup_kind) as 'unclaimed'|'staff_reply_due'|'user_reply_due';
+    try{
+      const channel=await discord.channels.fetch(String(followup.channel_id));
+      if(!channel||!channel.isTextBased()||channel.isDMBased()||typeof (channel as any).send!=='function'){
+        throw new Error('The private ticket channel is unavailable.');
+      }
+      const roleIds:string[]=kind==='unclaimed'?(followup.support_role_ids||[]).map(String):[];
+      const userIds:string[]=kind==='staff_reply_due'&&followup.claimed_by_user_id
+        ?[String(followup.claimed_by_user_id)]
+        :kind==='user_reply_due'?[String(followup.opener_user_id)]:[];
+      const hidden=followup.hide_staff_mentions!==false;
+      const staffMentions=roleIds.map(id=>hidden?`||<@&${id}>||`:`<@&${id}>`).join(' ');
+      const content=kind==='unclaimed'
+        ?[
+          `⏰ **${followup.public_id} is still waiting to be claimed.**`,
+          staffMentions,
+          `**Subject:** ${followup.subject}`,
+          'When someone starts reviewing it, use **Claim Ticket** so the player knows it is being handled.'
+        ].filter(Boolean).join('\n')
+        :kind==='staff_reply_due'
+          ?[
+            `⏰ ||<@${followup.claimed_by_user_id}>|| **${followup.public_id} has a player reply waiting for review.**`,
+            `**Subject:** ${followup.subject}`,
+            'This is a one-time follow-up for the current reply.'
+          ].join('\n')
+          :[
+            `👋 <@${followup.opener_user_id}> — just checking in on **${followup.public_id}**.`,
+            'Staff is waiting for your reply or additional details. Your ticket will stay open; respond here whenever you are ready.'
+          ].join('\n');
+      const sent=await (channel as any).send({content:content.slice(0,1950),allowedMentions:{roles:roleIds,users:userIds}});
+      await recordTicketFollowup({ticketId:Number(followup.id),kind,triggerAt:followup.trigger_at,messageId:String(sent.id)});
+    }catch(error){
+      await recordTicketFollowup({
+        ticketId:Number(followup.id),kind,triggerAt:followup.trigger_at,
+        error:cleanDiscordError(error)
+      }).catch(recordError=>console.error('[tickets] unable to record follow-up failure',recordError));
+    }
+  }
+}
+
 async function runTicketMaintenance(){
   if(ticketMaintenanceRunning||!discord.isReady()) return;
   ticketMaintenanceRunning=true;
@@ -1348,6 +1393,7 @@ async function runTicketMaintenance(){
       await reverseTicketPunishment(Number(punishment.id),{userId:'saucin-ai-expiry',name:'Saucin AI'},'Scheduled punishment duration completed.','expired')
         .catch(error=>console.error('[tickets] automatic punishment expiry failed',error));
     }
+    await runTicketFollowups().catch(error=>console.error('[tickets] automatic follow-up worker failed',error));
     await runIssueDiscordCleanup().catch(error=>console.error('[issues] resolved discussion cleanup failed',error));
   }finally{ticketMaintenanceRunning=false;}
 }

@@ -61,6 +61,13 @@ async function queueRows(access:Access,includeReviewed=false){
         WHERE $1::boolean AND status='open' AND claimed_by_user_id IS NULL
         ORDER BY CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 ELSE 3 END,created_at LIMIT 40) t
       UNION ALL
+      SELECT 'tickets','ticket_followup',f.id::text,to_jsonb(f)
+      FROM (SELECT fe.id,fe.ticket_id,t.public_id,t.subject,fe.followup_kind,fe.error_message,fe.attempt_count,
+          fe.updated_at,fe.status FROM ticket_followup_events fe JOIN tickets t ON t.id=fe.ticket_id
+        WHERE $1::boolean AND fe.status='failed' AND fe.attempt_count>=3
+          AND t.status IN ('open','claimed','awaiting_user')
+        ORDER BY fe.updated_at DESC LIMIT 30) f
+      UNION ALL
       SELECT 'issues','issue_candidate',i.id::text,to_jsonb(i)
       FROM (SELECT id,topic,sample_text,occurrence_count,confirmed_count,status,last_seen FROM issue_candidates
         WHERE $2::boolean AND status IN ('detected','reported')
@@ -106,8 +113,12 @@ async function queueRows(access:Access,includeReviewed=false){
   for(const resultRow of result.rows){
     const row=resultRow.payload||{};const module=String(resultRow.module_key) as AutomationModuleKey;const resourceType=String(resultRow.resource_type);
     if(module==='tickets'){
-      const score=row.priority==='urgent'?100:row.priority==='high'?90:75;
-      items.push(reviewed({key:`tickets:ticket:${row.id}`,module,resource_type:'ticket',resource_id:String(row.id),title:`${row.public_id||`Ticket ${row.id}`} · ${row.subject}`,detail:String(row.description||'').slice(0,280),reason:`Unclaimed ${row.priority} priority ticket.`,href:`/tickets/${row.id}`,priority:score>=95?'urgent':score>=85?'high':'normal',priority_score:score,created_at:iso(row.created_at),status:row.status},resultRow));
+      if(resourceType==='ticket_followup'){
+        items.push(reviewed({key:`tickets:ticket_followup:${row.id}`,module,resource_type:'ticket_followup',resource_id:String(row.id),title:`${row.public_id||`Ticket ${row.ticket_id}`} · reminder delivery failed`,detail:String(row.error_message||'Discord did not accept the reminder.').slice(0,280),reason:`Saucin AI stopped after ${row.attempt_count||3} delivery attempts. Open the ticket and check its Discord channel.`,href:`/tickets/${row.ticket_id}`,priority:'high',priority_score:88,created_at:iso(row.updated_at),status:'delivery_failed'},resultRow));
+      }else{
+        const score=row.priority==='urgent'?100:row.priority==='high'?90:75;
+        items.push(reviewed({key:`tickets:ticket:${row.id}`,module,resource_type:'ticket',resource_id:String(row.id),title:`${row.public_id||`Ticket ${row.id}`} · ${row.subject}`,detail:String(row.description||'').slice(0,280),reason:`Unclaimed ${row.priority} priority ticket.`,href:`/tickets/${row.id}`,priority:score>=95?'urgent':score>=85?'high':'normal',priority_score:score,created_at:iso(row.created_at),status:row.status},resultRow));
+      }
     }else if(module==='issues'){
       const score=Number(row.confirmed_count)>0?88:Number(row.occurrence_count)>=3?76:66;
       items.push(reviewed({key:`issues:issue_candidate:${row.id}`,module,resource_type:'issue_candidate',resource_id:String(row.id),title:String(row.topic||row.sample_text).slice(0,180),detail:String(row.sample_text||'').slice(0,280),reason:`${row.confirmed_count||0} confirmation(s) · ${row.occurrence_count||1} occurrence(s).`,href:'/issues?incoming=open',priority:score>=85?'high':'normal',priority_score:score,created_at:iso(row.last_seen),status:row.status},resultRow));
@@ -161,7 +172,7 @@ async function learningSnapshot(executor:{query:(text:string,values?:unknown[])=
       ? `SELECT COALESCE(topic,'')||E'\n'||COALESCE(sample_text,'') AS text,status,occurrence_count,confirmed_count FROM issue_candidates WHERE id=$1`
       : input.resourceType==='suggestion'
         ? `SELECT COALESCE(title,'')||E'\n'||COALESCE(summary,'')||E'\n'||COALESCE(community_context,'') AS text,status,category,mention_count FROM suggestions WHERE id=$1`
-        : input.resourceType==='knowledge_gap'
+      : input.resourceType==='knowledge_gap'
           ? `SELECT COALESCE(display_question,sample_question,'')||E'\n'||COALESCE(topic,'')||E'\n'||COALESCE(conversation_context,'') AS text,status,occurrences FROM knowledge_gaps WHERE id=$1`
           : input.resourceType==='issue_resolution'
             ? `SELECT COALESCE(title,'')||E'\n'||COALESCE(description,'')||E'\n'||COALESCE(resolution_summary,workaround,public_response,'') AS text,status,category,resource_name FROM issues WHERE id=$1`

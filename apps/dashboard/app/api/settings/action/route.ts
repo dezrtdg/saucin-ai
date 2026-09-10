@@ -91,6 +91,10 @@ export async function POST(request:Request){
           allow_user_close:checked(formData,'allow_user_close'),
           hide_staff_mentions:checked(formData,'hide_staff_mentions'),
           delete_closed_channels:checked(formData,'delete_closed_channels'),
+          followups_enabled:checked(formData,'followups_enabled'),
+          unclaimed_reminder_minutes:Math.max(10,Math.min(1440,integer(formData,'unclaimed_reminder_minutes',30))),
+          staff_followup_hours:Math.max(1,Math.min(168,integer(formData,'staff_followup_hours',12))),
+          awaiting_user_reminder_hours:Math.max(1,Math.min(336,integer(formData,'awaiting_user_reminder_hours',24))),
           warning_role_ids:unique(formData,'warning_role_ids'),timeout_role_ids:unique(formData,'timeout_role_ids'),
           kick_role_ids:unique(formData,'kick_role_ids'),ban_role_ids:unique(formData,'ban_role_ids'),
           reversal_role_ids:unique(formData,'reversal_role_ids')

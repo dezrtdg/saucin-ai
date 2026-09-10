@@ -4,7 +4,7 @@ import { api } from '../../../lib/api';
 import { can,getDashboardAccess } from '../../../lib/permissions';
 import DirectSettingsForm from '../../../components/DirectSettingsForm';
 
-type Settings={enabled:boolean;panel_channel_id:string|null;panel_message_id:string|null;open_category_id:string|null;closed_category_id:string|null;transcript_channel_id:string|null;max_open_per_user:number;allow_user_close:boolean;hide_staff_mentions:boolean;delete_closed_channels:boolean;warning_role_ids:string[];timeout_role_ids:string[];kick_role_ids:string[];ban_role_ids:string[];reversal_role_ids:string[]};
+type Settings={enabled:boolean;panel_channel_id:string|null;panel_message_id:string|null;open_category_id:string|null;closed_category_id:string|null;transcript_channel_id:string|null;max_open_per_user:number;allow_user_close:boolean;hide_staff_mentions:boolean;delete_closed_channels:boolean;followups_enabled:boolean;unclaimed_reminder_minutes:number;staff_followup_hours:number;awaiting_user_reminder_hours:number;warning_role_ids:string[];timeout_role_ids:string[];kick_role_ids:string[];ban_role_ids:string[];reversal_role_ids:string[]};
 type TicketType={key:string;label:string;description:string;emoji:string|null;intake_prompt:string;support_role_ids:string[];category_override_id:string|null;allow_punishments:boolean;enabled:boolean;sort_order:number};
 type Role={id:string;name:string;color:string;position:number};
 type TextChannel={id:string;name:string;category_id:string|null;category_name:string|null};
@@ -34,6 +34,13 @@ export default async function TicketSettingsPage(){
           <label className="settingToggleCard"><input name="allow_user_close" type="checkbox" defaultChecked={s.allow_user_close}/><span><strong>Allow members to close their own tickets</strong><small>Staff can always close tickets assigned to their routing role.</small></span></label>
           <label className="settingToggleCard"><input name="hide_staff_mentions" type="checkbox" defaultChecked={s.hide_staff_mentions}/><span><strong>Hide routed staff role names</strong><small>Staff roles are still notified, but their mentions are concealed behind Discord spoiler blocks.</small></span></label>
           <label className="settingToggleCard"><input name="delete_closed_channels" type="checkbox" defaultChecked={s.delete_closed_channels}/><span><strong>Delete Discord channel when closed</strong><small>The complete case stays in the dashboard and authorized staff can reopen it into a new private channel.</small></span></label>
+        </div>
+        <div className="settingsSubsection"><h3>Automatic follow-ups</h3><p>One reminder is sent for each stale conversation stage when Tickets is set to Auto-safe in the Automation Center. Failed deliveries retry up to three times. Tickets are never automatically closed.</p></div>
+        <div className="formGrid">
+          <label className="settingToggleCard"><input name="followups_enabled" type="checkbox" defaultChecked={s.followups_enabled}/><span><strong>Keep stale tickets moving</strong><small>Remind the correct staff member or player without repeatedly pinging the channel.</small></span></label>
+          <label className="field"><span>Unclaimed ticket reminder</span><input className="input" name="unclaimed_reminder_minutes" type="number" min="10" max="1440" defaultValue={s.unclaimed_reminder_minutes}/><small>Minutes before the routed staff roles receive one concealed reminder.</small></label>
+          <label className="field"><span>Player reply waiting on staff</span><input className="input" name="staff_followup_hours" type="number" min="1" max="168" defaultValue={s.staff_followup_hours}/><small>Hours before the staff member who claimed the ticket receives one concealed reminder.</small></label>
+          <label className="field"><span>Staff waiting on player</span><input className="input" name="awaiting_user_reminder_hours" type="number" min="1" max="336" defaultValue={s.awaiting_user_reminder_hours}/><small>Hours before the player receives one friendly check-in. The ticket remains open.</small></label>
         </div>
         <div className="settingsSubsection"><h3>Discord punishment authority</h3><p>These role lists limit what staff can apply from Discord ticket buttons. When a list is blank, any staff role assigned to that ticket type may use that action.</p></div>
         <div className="formGrid">

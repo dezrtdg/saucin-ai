@@ -14,6 +14,10 @@ export type TicketSettings = {
   allow_user_close:boolean;
   hide_staff_mentions:boolean;
   delete_closed_channels:boolean;
+  followups_enabled:boolean;
+  unclaimed_reminder_minutes:number;
+  staff_followup_hours:number;
+  awaiting_user_reminder_hours:number;
   warning_role_ids:string[];
   timeout_role_ids:string[];
   kick_role_ids:string[];
@@ -52,6 +56,10 @@ export async function getTicketSettings():Promise<TicketSettings>{
     allow_user_close:row.allow_user_close!==false,
     hide_staff_mentions:row.hide_staff_mentions!==false,
     delete_closed_channels:Boolean(row.delete_closed_channels),
+    followups_enabled:row.followups_enabled!==false,
+    unclaimed_reminder_minutes:Math.max(10,Math.min(1440,Number(row.unclaimed_reminder_minutes||30))),
+    staff_followup_hours:Math.max(1,Math.min(168,Number(row.staff_followup_hours||12))),
+    awaiting_user_reminder_hours:Math.max(1,Math.min(336,Number(row.awaiting_user_reminder_hours||24))),
     warning_role_ids:Array.isArray(row.warning_role_ids)?row.warning_role_ids.map(String):[],
     timeout_role_ids:Array.isArray(row.timeout_role_ids)?row.timeout_role_ids.map(String):[],
     kick_role_ids:Array.isArray(row.kick_role_ids)?row.kick_role_ids.map(String):[],
@@ -65,11 +73,16 @@ export async function updateTicketSettings(input:Omit<TicketSettings,'panel_mess
     UPDATE ticket_settings
        SET enabled=$1,panel_channel_id=$2,open_category_id=$3,closed_category_id=$4,
            transcript_channel_id=$5,max_open_per_user=$6,allow_user_close=$7,
-           hide_staff_mentions=$8,delete_closed_channels=$9,warning_role_ids=$10,timeout_role_ids=$11,kick_role_ids=$12,ban_role_ids=$13,reversal_role_ids=$14,updated_at=NOW()
+           hide_staff_mentions=$8,delete_closed_channels=$9,followups_enabled=$10,
+           unclaimed_reminder_minutes=$11,staff_followup_hours=$12,awaiting_user_reminder_hours=$13,
+           warning_role_ids=$14,timeout_role_ids=$15,kick_role_ids=$16,ban_role_ids=$17,reversal_role_ids=$18,updated_at=NOW()
      WHERE id=1 RETURNING *`,[
     input.enabled,input.panel_channel_id||null,input.open_category_id||null,input.closed_category_id||null,
     input.transcript_channel_id||null,Math.max(1,Math.min(10,input.max_open_per_user)),input.allow_user_close,
-    input.hide_staff_mentions,input.delete_closed_channels,unique(input.warning_role_ids),unique(input.timeout_role_ids),unique(input.kick_role_ids),unique(input.ban_role_ids),unique(input.reversal_role_ids)
+    input.hide_staff_mentions,input.delete_closed_channels,input.followups_enabled,
+    Math.max(10,Math.min(1440,input.unclaimed_reminder_minutes)),Math.max(1,Math.min(168,input.staff_followup_hours)),
+    Math.max(1,Math.min(336,input.awaiting_user_reminder_hours)),unique(input.warning_role_ids),unique(input.timeout_role_ids),
+    unique(input.kick_role_ids),unique(input.ban_role_ids),unique(input.reversal_role_ids)
   ]);
   return result.rows[0];
 }
@@ -206,6 +219,75 @@ export async function saveTicketMessage(ticketId:number,input:{
   ]);
   if(result.rowCount) await db.query('UPDATE tickets SET last_message_at=$1,updated_at=NOW() WHERE id=$2',[input.createdAt,ticketId]);
   return Boolean(result.rowCount);
+}
+
+export type TicketFollowupKind='unclaimed'|'staff_reply_due'|'user_reply_due';
+
+export async function dueTicketFollowups(limit=50){
+  const result=await db.query(`
+    WITH candidates AS (
+      SELECT t.id,t.public_id,t.channel_id,t.opener_user_id,t.claimed_by_user_id,t.subject,t.status,
+             tt.support_role_ids,s.hide_staff_mentions,
+             CASE
+               WHEN t.status='open' AND t.claimed_by_user_id IS NULL THEN 'unclaimed'
+               WHEN t.status='claimed' THEN 'staff_reply_due'
+               ELSE 'user_reply_due'
+             END AS followup_kind,
+             CASE
+               WHEN t.status='open' AND t.claimed_by_user_id IS NULL THEN t.created_at
+               WHEN t.status='claimed' THEN COALESCE(lm.discord_created_at,t.last_message_at,t.updated_at)
+               ELSE GREATEST(COALESCE(t.last_message_at,t.updated_at),t.updated_at)
+             END AS trigger_at
+        FROM tickets t
+        JOIN ticket_types tt ON tt.key=t.type_key
+        CROSS JOIN ticket_settings s
+        JOIN automation_module_settings a ON a.module_key='tickets'
+        LEFT JOIN LATERAL (
+          SELECT discord_user_id,discord_created_at
+            FROM ticket_messages
+           WHERE ticket_id=t.id AND NOT is_bot
+           ORDER BY discord_created_at DESC,id DESC LIMIT 1
+        ) lm ON TRUE
+       WHERE s.id=1 AND s.followups_enabled AND a.autonomy_level='auto_safe' AND t.channel_id IS NOT NULL
+         AND (
+           (t.status='open' AND t.claimed_by_user_id IS NULL
+             AND t.created_at<=NOW()-make_interval(mins=>s.unclaimed_reminder_minutes))
+           OR (t.status='claimed' AND lm.discord_user_id=t.opener_user_id
+             AND COALESCE(lm.discord_created_at,t.last_message_at,t.updated_at)<=NOW()-make_interval(hours=>s.staff_followup_hours))
+           OR (t.status='awaiting_user'
+             AND GREATEST(COALESCE(t.last_message_at,t.updated_at),t.updated_at)<=NOW()-make_interval(hours=>s.awaiting_user_reminder_hours))
+         )
+    )
+    SELECT c.*,COALESCE(f.attempt_count,0)::int AS previous_attempts
+      FROM candidates c
+      LEFT JOIN ticket_followup_events f ON f.ticket_id=c.id AND f.followup_kind=c.followup_kind AND f.trigger_at=c.trigger_at
+     WHERE f.id IS NULL OR (f.status='failed' AND f.attempt_count<3 AND f.next_retry_at<=NOW())
+     ORDER BY c.trigger_at ASC LIMIT $1`,[Math.max(1,Math.min(100,limit))]);
+  return result.rows;
+}
+
+export async function recordTicketFollowup(input:{
+  ticketId:number;kind:TicketFollowupKind;triggerAt:Date|string;messageId?:string|null;error?:string|null;
+}){
+  const sent=Boolean(input.messageId&&!input.error);
+  const result=await db.query(`
+    INSERT INTO ticket_followup_events
+      (ticket_id,followup_kind,trigger_at,status,attempt_count,discord_message_id,error_message,next_retry_at,sent_at)
+    VALUES ($1,$2,$3,$4,1,$5,$6,CASE WHEN $4='failed' THEN NOW()+INTERVAL '15 minutes' END,
+            CASE WHEN $4='sent' THEN NOW() END)
+    ON CONFLICT(ticket_id,followup_kind,trigger_at) DO UPDATE SET
+      status=EXCLUDED.status,attempt_count=ticket_followup_events.attempt_count+1,
+      discord_message_id=EXCLUDED.discord_message_id,error_message=EXCLUDED.error_message,
+      next_retry_at=CASE WHEN EXCLUDED.status='failed' THEN NOW()+INTERVAL '15 minutes' END,
+      sent_at=CASE WHEN EXCLUDED.status='sent' THEN NOW() ELSE ticket_followup_events.sent_at END,updated_at=NOW()
+    RETURNING *`,[
+    input.ticketId,input.kind,input.triggerAt,sent?'sent':'failed',input.messageId||null,
+    sent?null:String(input.error||'Discord reminder delivery failed.').slice(0,1000)
+  ]);
+  if(sent)await addTicketEvent(input.ticketId,'automatic_followup',null,'Saucin AI',{
+    followup_kind:input.kind,discord_message_id:input.messageId,trigger_at:new Date(input.triggerAt).toISOString()
+  });
+  return result.rows[0];
 }
 
 export async function addTicketEvent(ticketId:number,eventType:string,actorUserId?:string|null,actorName?:string|null,details:Record<string,unknown>={}){

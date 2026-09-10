@@ -545,6 +545,8 @@ export async function adminRoutes(app: FastifyInstance) {
         open_category_id:z.string().trim().max(64).nullable().optional(),closed_category_id:z.string().trim().max(64).nullable().optional(),
         transcript_channel_id:z.string().trim().max(64).nullable().optional(),max_open_per_user:z.coerce.number().int().min(1).max(10),
         allow_user_close:z.boolean(),hide_staff_mentions:z.boolean(),delete_closed_channels:z.boolean(),warning_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
+        followups_enabled:z.boolean(),unclaimed_reminder_minutes:z.coerce.number().int().min(10).max(1440),
+        staff_followup_hours:z.coerce.number().int().min(1).max(168),awaiting_user_reminder_hours:z.coerce.number().int().min(1).max(336),
         timeout_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
         kick_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
         ban_role_ids:z.array(z.string().trim().min(1).max(64)).max(100).default([]),
@@ -555,6 +557,8 @@ export async function adminRoutes(app: FastifyInstance) {
         closed_category_id:body.closed_category_id||null,transcript_channel_id:body.transcript_channel_id||null,
         max_open_per_user:body.max_open_per_user,allow_user_close:body.allow_user_close,hide_staff_mentions:body.hide_staff_mentions,
         delete_closed_channels:body.delete_closed_channels,
+        followups_enabled:body.followups_enabled,unclaimed_reminder_minutes:body.unclaimed_reminder_minutes,
+        staff_followup_hours:body.staff_followup_hours,awaiting_user_reminder_hours:body.awaiting_user_reminder_hours,
         warning_role_ids:body.warning_role_ids,timeout_role_ids:body.timeout_role_ids,kick_role_ids:body.kick_role_ids,
         ban_role_ids:body.ban_role_ids,reversal_role_ids:body.reversal_role_ids
       });

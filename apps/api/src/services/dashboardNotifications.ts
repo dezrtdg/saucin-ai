@@ -41,7 +41,11 @@ export async function getDashboardNotifications(input: NotificationInput) {
     ticketReplies,ticketMentions,issueReplies,issueMentions,suggestionReplies,suggestionMentions
   ]=await Promise.all([
     canAiHealth?getAiRuntimeHealth():Promise.resolve(null),
-    canTickets?db.query(`SELECT count(*)::int AS count FROM tickets WHERE status='open' AND claimed_by_user_id IS NULL`):zero,
+    canTickets?db.query(`SELECT (
+      (SELECT count(*) FROM tickets WHERE status='open' AND claimed_by_user_id IS NULL)+
+      (SELECT count(*) FROM ticket_followup_events f JOIN tickets t ON t.id=f.ticket_id
+        WHERE f.status='failed' AND f.attempt_count>=3 AND t.status IN ('open','claimed','awaiting_user'))
+      )::int AS count`):zero,
     canIssues?db.query(`SELECT count(*)::int AS count FROM issue_candidates WHERE status IN ('detected','reported')`):zero,
     canSuggestions?db.query(`SELECT count(*)::int AS count FROM suggestions WHERE status IN ('candidate','reviewing')`):zero,
     canGaps?db.query(`SELECT count(*)::int AS count FROM knowledge_gaps WHERE status='open'`):zero,
@@ -199,7 +203,7 @@ export async function getDashboardNotifications(input: NotificationInput) {
     counts,
     personal,
     queues:[
-      ...(Number(ticketQueue.rows[0]?.count||0)?[{key:'tickets',label:'Unclaimed tickets',count:Number(ticketQueue.rows[0].count),href:'/tickets?status=open'}]:[]),
+      ...(Number(ticketQueue.rows[0]?.count||0)?[{key:'tickets',label:'Tickets needing attention',count:Number(ticketQueue.rows[0].count),href:'/automation?module=tickets'}]:[]),
       ...(Number(issueQueue.rows[0]?.count||0)?[{key:'issues',label:'Incoming issue reports',count:Number(issueQueue.rows[0].count),href:'/issues?incoming=open'}]:[]),
       ...(Number(suggestionQueue.rows[0]?.count||0)?[{key:'suggestions',label:'Suggestions needing review',count:Number(suggestionQueue.rows[0].count),href:'/suggestions?status=candidate'}]:[]),
       ...(counts.knowledgeGaps?[{key:'knowledge-gaps',label:'Open knowledge gaps',count:counts.knowledgeGaps,href:'/knowledge-gaps?status=open'}]:[]),
