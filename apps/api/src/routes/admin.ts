@@ -8,7 +8,7 @@ import { invalidateBotBehaviorSettingsCache } from '../services/botSettings.js';
 import { backfillKnowledgeEmbeddings, buildKnowledgeDraft, deriveKnowledgeGapQuestion, improveKnowledgeRetrieval, refreshKnowledgeEmbedding } from '../services/knowledge.js';
 import { buildIssueDraft, linkCandidateToIssue, refreshIssueEmbedding, setIssueObservationStatus } from '../services/issues.js';
 import { allPermissionKeys, parseDashboardIdentity, permissionCatalog, permissionSnapshot, permissionSystemConfigured, rolePermissionMapForDisplay, saveRolePermissions } from '../services/permissions.js';
-import { clearModerationDiagnostics, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
+import { clearModerationDiagnostics, getModerationCalibrationOverview, getModerationCase, getModerationRuleSettings, getModerationSettings, getModerationUserHistory, listModerationCases, listModerationDiagnostics, reviewModerationCase, simulateModerationMessage, updateModerationRuleSettings, updateModerationSettings } from '../services/moderation.js';
 import { claimTicket, getPunishment, getTicket, getTicketSettings, listPunishments, listTickets, listTicketTypes, releaseTicket, setTicketStatus, updateTicketSettings, updateTicketType } from '../services/tickets.js';
 import { getDashboardNotifications, markDashboardNotificationsRead } from '../services/dashboardNotifications.js';
 import { acknowledgeTxAdminEvent, correlateIssueWithTxAdmin, getTxAdminOverview, getTxAdminSettings, listTxAdminEvents, resolveTxAdminEvent, updateTxAdminSettings } from '../services/txadmin.js';
@@ -110,7 +110,9 @@ function routeRequirement(method: string, route: string): string[] | null {
     'GET /api/moderation/rules': ['moderation.configure'],
     'PUT /api/moderation/rules/:articleId': ['moderation.configure'],
     'GET /api/moderation/diagnostics': ['moderation.configure'],
-    'DELETE /api/moderation/diagnostics': ['moderation.configure']
+    'DELETE /api/moderation/diagnostics': ['moderation.configure'],
+    'GET /api/moderation/calibration': ['moderation.configure'],
+    'POST /api/moderation/calibration/test': ['moderation.configure']
   };
   return exact[key] ?? null;
 }
@@ -703,6 +705,28 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     admin.delete('/api/moderation/diagnostics', async () => clearModerationDiagnostics());
+
+    admin.get('/api/moderation/calibration', async () => {
+      const [overview,channels]=await Promise.all([
+        getModerationCalibrationOverview(),
+        db.query(`SELECT discord_channel_id AS id,channel_name AS name,mode,monitor_messages
+          FROM channel_policies ORDER BY channel_name NULLS LAST,discord_channel_id`)
+      ]);
+      return {...overview,channels:channels.rows};
+    });
+
+    admin.post('/api/moderation/calibration/test', async (request,reply) => {
+      const body=z.object({
+        content:z.string().trim().min(2).max(4000),
+        context:z.string().max(6000).default(''),
+        author_name:z.string().trim().max(80).default('Test member'),
+        channel_id:z.string().trim().max(64).nullable().optional()
+      }).parse(request.body);
+      try{return await simulateModerationMessage({
+        content:body.content,context:body.context,authorName:body.author_name,channelId:body.channel_id||null
+      });}
+      catch(error){return reply.code(500).send({error:error instanceof Error?error.message:'Unable to run moderation calibration test.'});}
+    });
 
     admin.get('/api/overview', async () => {
       const [messages, activity, issues, suggestions, channels, knowledge, gaps, candidates] = await Promise.all([

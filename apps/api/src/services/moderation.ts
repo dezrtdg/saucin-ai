@@ -58,6 +58,14 @@ export type MemberModerationReport = {
   audit_channel_id:string|null;
 };
 
+export type ModerationCalibrationDecision =
+  | 'would_stay_silent'
+  | 'context_safety_gate'
+  | 'below_threshold'
+  | 'would_create_observe_case'
+  | 'ai_unavailable'
+  | 'analysis_error';
+
 type EligibleRule = {
   id: number;
   title: string;
@@ -309,6 +317,67 @@ export async function clearModerationDiagnostics() {
   return { deleted: result.rowCount||0 };
 }
 
+export async function getModerationCalibrationOverview() {
+  const [settings,summary,ruleRows,gateRows,recentDismissals,learning] = await Promise.all([
+    getModerationSettings(),
+    db.query(`SELECT
+      count(*) FILTER (WHERE created_at>NOW()-INTERVAL '30 days')::int AS total_30d,
+      count(*) FILTER (WHERE status='pending' AND created_at>NOW()-INTERVAL '30 days')::int AS pending_30d,
+      count(*) FILTER (WHERE status='confirmed' AND reviewed_at>NOW()-INTERVAL '30 days')::int AS confirmed_30d,
+      count(*) FILTER (WHERE status='dismissed' AND reviewed_at>NOW()-INTERVAL '30 days')::int AS dismissed_30d,
+      count(*) FILTER (WHERE source='member_report' AND created_at>NOW()-INTERVAL '30 days')::int AS member_reports_30d,
+      count(*) FILTER (WHERE player_contested_at>NOW()-INTERVAL '30 days')::int AS contested_30d
+      FROM moderation_cases`),
+    db.query(`SELECT rule_article_id,rule_title,
+      count(*) FILTER (WHERE status='pending')::int AS pending,
+      count(*) FILTER (WHERE status='confirmed')::int AS confirmed,
+      count(*) FILTER (WHERE status='dismissed')::int AS dismissed,
+      count(*) FILTER (WHERE source='member_report')::int AS member_reports,
+      count(*)::int AS total
+      FROM moderation_cases
+      WHERE created_at>NOW()-INTERVAL '30 days'
+      GROUP BY rule_article_id,rule_title
+      ORDER BY count(*) DESC,rule_title
+      LIMIT 50`),
+    db.query(`SELECT result_code,count(*)::int AS count
+      FROM moderation_diagnostics
+      WHERE created_at>NOW()-INTERVAL '30 days'
+      GROUP BY result_code ORDER BY count(*) DESC`),
+    db.query(`SELECT id,public_id,rule_title,author_name,message_content,review_notes,reviewed_at
+      FROM moderation_cases
+      WHERE status='dismissed' AND reviewed_by_user_id IS NOT NULL
+      ORDER BY reviewed_at DESC NULLS LAST LIMIT 8`),
+    db.query(`SELECT count(*)::int AS count FROM automation_learning_examples
+      WHERE module_key='moderation' AND trusted=TRUE`)
+  ]);
+  const row=summary.rows[0]||{};
+  const confirmed=Number(row.confirmed_30d||0);
+  const dismissed=Number(row.dismissed_30d||0);
+  const reviewed=confirmed+dismissed;
+  const dismissalRate=reviewed?dismissed/reviewed:null;
+  const readiness=reviewed<20
+    ?{state:'collecting',label:'Collecting review data',detail:`Review at least ${20-reviewed} more Observe cases before considering any automatic moderation.`}
+    :dismissalRate!=null&&dismissalRate>.15
+      ?{state:'needs_tuning',label:'Needs more tuning',detail:'More than 15% of reviewed detections were dismissed. Keep moderation in Observe and use the simulator to refine weak rules.'}
+      :{state:'stable_observe',label:'Observe results look stable',detail:'Reviewed accuracy is stable enough for continued testing. This does not enable enforcement automatically.'};
+  return {
+    settings,
+    summary:{
+      total_30d:Number(row.total_30d||0),pending_30d:Number(row.pending_30d||0),confirmed_30d:confirmed,
+      dismissed_30d:dismissed,reviewed_30d:reviewed,member_reports_30d:Number(row.member_reports_30d||0),
+      contested_30d:Number(row.contested_30d||0),dismissal_rate:dismissalRate
+    },
+    readiness,
+    rule_metrics:ruleRows.rows.map(rule=>{
+      const reviewedCount=Number(rule.confirmed||0)+Number(rule.dismissed||0);
+      return {...rule,reviewed:reviewedCount,dismissal_rate:reviewedCount?Number(rule.dismissed||0)/reviewedCount:null};
+    }),
+    safety_gates:gateRows.rows,
+    recent_dismissals:recentDismissals.rows,
+    trusted_learning_examples:Number(learning.rows[0]?.count||0)
+  };
+}
+
 async function createModerationQueryEmbedding(message:string):Promise<number[]|null> {
   if(!client || !env.AI_ENABLED || !message.trim()) return null;
   try {
@@ -495,6 +564,120 @@ function rulesPrompt(rules:EligibleRule[]) {
     rule.related_topics.length?`RELATED: ${rule.related_topics.slice(0,8).join(', ')}`:'',
     rule.example_questions.length?`EXAMPLES: ${rule.example_questions.slice(0,8).join(' | ')}`:''
   ].filter(Boolean).join('\n')).join('\n\n---\n\n');
+}
+
+export async function simulateModerationMessage(input:{
+  content:string; context?:string; authorName?:string; channelId?:string|null;
+}) {
+  const settings=await getModerationSettings();
+  const content=String(input.content||'').trim().slice(0,4000);
+  const context=String(input.context||'').trim().slice(0,6000);
+  const authorName=String(input.authorName||'Test member').trim().slice(0,80)||'Test member';
+  const base={
+    mode:settings.mode,model:env.AI_CLASSIFIER_MODEL,content,context,
+    creates_case:false,contacts_discord:false,applies_action:false
+  };
+
+  if(!client||!env.AI_ENABLED){
+    return {...base,decision:'ai_unavailable' as ModerationCalibrationDecision,label:'AI unavailable',
+      reason:'The moderation AI runtime is unavailable. No decision was made.',rule_id:null,rule_title:null,confidence:null,threshold:settings.minimum_confidence};
+  }
+  if(content.length<2){
+    return {...base,decision:'would_stay_silent' as ModerationCalibrationDecision,label:'Would stay silent',
+      reason:'The message is too short to evaluate safely.',rule_id:null,rule_title:null,confidence:0,threshold:settings.minimum_confidence};
+  }
+  if(isKnownBenignGamingLanguage(content)){
+    return {...base,decision:'would_stay_silent' as ModerationCalibrationDecision,label:'Would stay silent',
+      reason:'Recognized as ordinary gameplay or media-capture language.',rule_id:null,rule_title:null,confidence:0,
+      threshold:settings.minimum_confidence,context_kind:'gameplay_or_media',harmful_targeting:false,plausible_benign_interpretation:true};
+  }
+
+  const candidates=await candidateRules(content);
+  const rules=candidates.filter(rule=>!input.channelId||!rule.channel_ids.length||rule.channel_ids.includes(input.channelId));
+  if(!rules.length){
+    return {...base,decision:'would_stay_silent' as ModerationCalibrationDecision,label:'Would stay silent',
+      reason:input.channelId&&candidates.length?'No matching rule is enabled for the selected channel.':'No published moderation rule is available for this message.',
+      rule_id:null,rule_title:null,confidence:0,threshold:settings.minimum_confidence};
+  }
+
+  const calibration=await trustedFalsePositiveExamples(rules.map(rule=>rule.id)).catch(()=>'(unavailable)');
+  let parsed:z.infer<typeof aiResultSchema>;
+  try{
+    const response=await client.responses.create({
+      model:env.AI_CLASSIFIER_MODEL,
+      reasoning:{effort:'low'},
+      instructions:`You are running a DRY-RUN moderation calibration test for ${env.SERVER_NAME}, a gaming and roleplay Discord community. Evaluate only the supplied target message against the supplied verified Discord rules. Use the conversation context to determine meaning, tone, targeting, and whether an exchange appears mutual. Never invent rules, relationships, intent, history, harm, or punishments.
+
+Gaming communities naturally include profanity, competitive trash talk, jokes, sarcasm, roleplay, in-game violence, and words such as clip, kill, shoot, smoke, cook, destroy, steal, or rob. Those words are not violations by themselves. Quoting, reporting, lyrics, memes, moderation discussion, gameplay narration, roleplay, and media capture are not violations unless the target message independently contains prohibited conduct.
+
+For harassment or toxicity, require clear unwanted targeting, personal abuse, discriminatory hostility, intimidation, or a sustained/repeated pattern supported by context. Mutual banter, profanity, teasing, rivalry, or disagreement is insufficient by itself. Missing context is uncertainty, not evidence. If a reasonable benign interpretation remains, return matched=false.
+
+Confidence measures rule fit, not how offensive a phrase sounds: 0.95-0.99 unmistakable; 0.88-0.94 clear targeted violation; 0.76-0.87 likely but ambiguous; 0.60-0.75 borderline; below 0.60 weak. Return only compact JSON matching this shape:
+{"matched":boolean,"rule_id":number|null,"confidence":number,"reason":string,"evidence":string,"context_kind":"explicit_violation|targeted_hostility|gaming_banter|gameplay_or_media|quoted_or_reported|ambiguous|other","harmful_targeting":boolean,"plausible_benign_interpretation":boolean}`,
+      input:`CONVERSATION CONTEXT:\n${context||'(none supplied)'}\n\nTARGET MESSAGE (${authorName}):\n${content}\n\nVERIFIED DISCORD RULES:\n${rulesPrompt(rules)}\n\nTRUSTED STAFF-DISMISSED FALSE POSITIVES:\n${calibration}`,
+      max_output_tokens:900
+    });
+    const raw=response.output_text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+    parsed=aiResultSchema.parse(JSON.parse(raw));
+  }catch(error){
+    return {...base,decision:'analysis_error' as ModerationCalibrationDecision,label:'Analysis failed',
+      reason:error instanceof Error?error.message.slice(0,500):String(error).slice(0,500),rule_id:null,rule_title:null,
+      confidence:null,threshold:settings.minimum_confidence};
+  }
+
+  if(!parsed.matched||!parsed.rule_id){
+    return {...base,decision:'would_stay_silent' as ModerationCalibrationDecision,label:'Would stay silent',
+      reason:parsed.reason||'No verified rule match was found.',evidence:parsed.evidence,rule_id:null,rule_title:null,
+      confidence:parsed.confidence,threshold:settings.minimum_confidence,context_kind:parsed.context_kind,
+      harmful_targeting:parsed.harmful_targeting,plausible_benign_interpretation:parsed.plausible_benign_interpretation,first_pass:parsed};
+  }
+
+  const rule=rules.find(item=>item.id===Number(parsed.rule_id));
+  if(!rule){
+    return {...base,decision:'analysis_error' as ModerationCalibrationDecision,label:'Invalid rule selection',
+      reason:'The AI selected a rule that was not eligible for this test.',rule_id:parsed.rule_id,rule_title:null,
+      confidence:parsed.confidence,threshold:settings.minimum_confidence,first_pass:parsed};
+  }
+  const threshold=rule.minimum_confidence==null?settings.minimum_confidence:clamp(rule.minimum_confidence,0,1);
+  const firstPassUnsafe=parsed.plausible_benign_interpretation||['gaming_banter','gameplay_or_media','quoted_or_reported','ambiguous'].includes(parsed.context_kind);
+  if(firstPassUnsafe){
+    return {...base,decision:'context_safety_gate' as ModerationCalibrationDecision,label:'Blocked by context safety',
+      reason:parsed.reason||'The first pass found a reasonable benign interpretation.',evidence:parsed.evidence,
+      rule_id:rule.id,rule_title:rule.title,confidence:parsed.confidence,threshold,context_kind:parsed.context_kind,
+      harmful_targeting:parsed.harmful_targeting,plausible_benign_interpretation:parsed.plausible_benign_interpretation,first_pass:parsed};
+  }
+
+  let verification:z.infer<typeof moderationVerificationSchema>;
+  try{
+    const checked=await verifyModerationMatch({rule,context,authorName,content,firstPass:parsed,calibration});
+    if(!checked) throw new Error('The independent safety reviewer was unavailable.');
+    verification=checked;
+  }catch(error){
+    return {...base,decision:'context_safety_gate' as ModerationCalibrationDecision,label:'Blocked by safety review',
+      reason:`The independent second pass could not safely uphold the match: ${error instanceof Error?error.message:String(error)}`.slice(0,700),
+      evidence:parsed.evidence,rule_id:rule.id,rule_title:rule.title,confidence:parsed.confidence,threshold,first_pass:parsed};
+  }
+
+  const secondPassUnsafe=!verification.uphold||verification.plausible_benign_interpretation||
+    ['gaming_banter','gameplay_or_media','quoted_or_reported','ambiguous'].includes(verification.context_kind);
+  const confidence=clamp(Math.min(parsed.confidence,verification.confidence),0,1);
+  if(secondPassUnsafe){
+    return {...base,decision:'context_safety_gate' as ModerationCalibrationDecision,label:'Blocked by context safety',
+      reason:verification.reason||'The independent safety reviewer did not uphold the match.',evidence:parsed.evidence,
+      rule_id:rule.id,rule_title:rule.title,confidence,threshold,context_kind:verification.context_kind,
+      harmful_targeting:verification.harmful_targeting,plausible_benign_interpretation:verification.plausible_benign_interpretation,
+      first_pass:parsed,second_pass:verification};
+  }
+  if(confidence<threshold){
+    return {...base,decision:'below_threshold' as ModerationCalibrationDecision,label:'Below confidence threshold',
+      reason:verification.reason||parsed.reason,evidence:parsed.evidence,rule_id:rule.id,rule_title:rule.title,
+      confidence,threshold,context_kind:verification.context_kind,harmful_targeting:verification.harmful_targeting,
+      plausible_benign_interpretation:verification.plausible_benign_interpretation,first_pass:parsed,second_pass:verification};
+  }
+  return {...base,decision:'would_create_observe_case' as ModerationCalibrationDecision,label:'Would create an Observe case',
+    reason:verification.reason||parsed.reason,evidence:parsed.evidence,rule_id:rule.id,rule_title:rule.title,
+    confidence,threshold,context_kind:verification.context_kind,harmful_targeting:verification.harmful_targeting,
+    plausible_benign_interpretation:verification.plausible_benign_interpretation,first_pass:parsed,second_pass:verification};
 }
 
 export async function processModerationMessage(input:{

@@ -56,6 +56,7 @@ export default async function ModerationSettingsPage(){
         <p><strong>Current mode: {modeLabel}.</strong> {modeDescription}</p>
       </div>
       <div className={styles.headerActions}>
+        <Link className="button primary" href="/settings/moderation/calibration">Calibration Center</Link>
         <Link className="button" href="/settings/moderation/diagnostics">Diagnostics</Link>
         <Link className="button" href="/moderation">Open Moderation Queue</Link>
       </div>
