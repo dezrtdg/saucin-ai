@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
-import OpenAI from 'openai';
 import { db } from '../db.js';
 import { env } from '../env.js';
+import { aiClient as client } from './aiRuntime.js';
 
 export type KnowledgeQueryPlan = {
   original: string;
@@ -24,8 +24,6 @@ export type KnowledgeHit = {
   rank: number;
   match_types: string[];
 };
-
-const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
 function unique(values: string[], max = 40) {
   return [...new Set(values.map(value => String(value).trim()).filter(Boolean))].slice(0, max);

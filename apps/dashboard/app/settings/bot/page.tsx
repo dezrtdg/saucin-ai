@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { api } from '../../../lib/api';
 import { can, getDashboardAccess } from '../../../lib/permissions';
 import DirectSettingsForm from '../../../components/DirectSettingsForm';
+import LiveRefresh from '../../../components/LiveRefresh';
 
 type BotSettings = {
   direct_mentions_enabled: boolean;
@@ -11,6 +12,13 @@ type BotSettings = {
   direct_mentions_use_recent_context: boolean;
   direct_mentions_context_messages: number;
   updated_at?: string;
+};
+
+type AiHealth = {
+  status:string;configured:boolean;enabled:boolean;needs_attention:boolean;summary:string;
+  consecutive_failures?:number;total_requests?:number;total_failures?:number;
+  last_success_at?:string|null;last_failure_at?:string|null;last_error_kind?:string|null;
+  last_error_message?:string|null;cooldown_remaining_seconds?:number;
 };
 
 const defaults: BotSettings = {
@@ -25,14 +33,19 @@ export default async function BotSettingsPage() {
   const access=await getDashboardAccess();
   if(!can(access,'settings.bot.manage')) redirect('/settings');
   let settings = defaults;
+  let aiHealth:AiHealth={status:'unknown',configured:false,enabled:false,needs_attention:false,summary:'AI status is unavailable.'};
   let loadError = '';
   try {
-    settings = await api<BotSettings>('/api/bot/settings');
+    [settings,aiHealth] = await Promise.all([
+      api<BotSettings>('/api/bot/settings'),
+      api<AiHealth>('/api/ai/health')
+    ]);
   } catch (error) {
     loadError = error instanceof Error ? error.message : 'Unable to load bot settings.';
   }
 
   return <>
+    <LiveRefresh interval={30000}/>
     <header className="pageHeader">
       <div>
         <p className="eyebrow">SETTINGS</p>
@@ -43,6 +56,20 @@ export default async function BotSettingsPage() {
     </header>
 
     {loadError ? <div className="alert error">Could not load bot settings: {loadError}</div> : null}
+
+    <section className="panel settingsSection">
+      <div className="panelTitle">
+        <div><h2>AI service health</h2><p>{aiHealth.summary}</p></div>
+        <span className={`statusBadge ${aiHealth.status==='healthy'?'status-published':aiHealth.needs_attention?'severity-critical':'status-reviewing'}`}>{aiHealth.status.replaceAll('_',' ')}</span>
+      </div>
+      <div className="formGrid">
+        <div className="lockedField"><span>Configuration</span><strong>{aiHealth.configured?'API key configured':'API key missing'}</strong><small>{aiHealth.enabled?'AI features enabled':'AI features disabled'}</small></div>
+        <div className="lockedField"><span>Recent requests</span><strong>{aiHealth.total_requests??0}</strong><small>{aiHealth.total_failures??0} provider failure{aiHealth.total_failures===1?'':'s'} recorded</small></div>
+        <div className="lockedField"><span>Last success</span><strong>{aiHealth.last_success_at?new Date(aiHealth.last_success_at).toLocaleString():'No successful request yet'}</strong><small>{aiHealth.cooldown_remaining_seconds?`Automatic retry in about ${aiHealth.cooldown_remaining_seconds} seconds`:'Ready for the next request'}</small></div>
+      </div>
+      {aiHealth.needs_attention?<div className="alert error"><strong>{aiHealth.last_error_kind?.replaceAll('_',' ')||'AI configuration'}:</strong> {aiHealth.last_error_message||'Check the OpenAI key and account quota in the Unraid .env file.'}</div>:null}
+      <p className="viewOnlyNote">When AI is unavailable, Saucin AI keeps monitoring Discord and uses its conservative rule-based routing. It will not guess, auto-punish, or publish unverified knowledge.</p>
+    </section>
 
     <section className="panel settingsSection">
       <div className="panelTitle">

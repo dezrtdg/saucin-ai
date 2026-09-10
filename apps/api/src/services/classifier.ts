@@ -1,6 +1,6 @@
-import OpenAI from 'openai';
 import { env } from '../env.js';
 import { routingCalibrationPrompt } from './learning.js';
+import { aiClient as client } from './aiRuntime.js';
 
 export type Intent = 'question' | 'issue' | 'suggestion' | 'casual' | 'staff_request' | 'unknown';
 export type Classification = {
@@ -13,8 +13,6 @@ export type Classification = {
   searchTerms: string[];
   relatedTopics: string[];
 };
-
-const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
 const stopWords = new Set([
   'a','an','and','are','as','at','be','been','but','by','can','could','did','do','does','for','from','had','has','have','how','i','if','in','is','it','me','my','of','on','or','so','that','the','their','them','then','there','they','this','to','was','we','were','what','when','where','which','who','why','will','with','would','you','your'

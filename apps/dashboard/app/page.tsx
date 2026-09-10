@@ -7,7 +7,7 @@ import LiveRefresh from '../components/LiveRefresh';
 type Activity={id:number;intent:string;confidence:string;response_text:string|null;created_at:string;channel_name:string|null;author_name:string|null;content:string|null};
 type PersonalKind='ticket_reply'|'ticket_mention'|'issue_reply'|'issue_mention'|'suggestion_reply'|'suggestion_mention';
 type Notice={
-  total:number;counts:{tickets:number;issues:number;suggestions:number;knowledgeGaps:number;moderation:number;txadmin:number;personal:number};
+  total:number;counts:{tickets:number;issues:number;suggestions:number;knowledgeGaps:number;moderation:number;txadmin:number;ai:number;personal:number};
   personal:Array<{key:string;kind:PersonalKind;title:string;detail:string;href:string;created_at:string}>;
   queues:Array<{key:string;label:string;count:number;href:string}>;
 };
@@ -22,7 +22,7 @@ export default async function Home(){
     return <><header className="pageHeader"><div><p className="eyebrow">ACCESS</p><h1>Dashboard access enabled</h1><p>Your role can sign in, but it does not currently have access to any dashboard modules.</p></div></header><div className="viewOnlyNote">Ask a dashboard administrator to grant this role at least one view permission.</div></>;
   }
 
-  let notices:Notice={total:0,counts:{tickets:0,issues:0,suggestions:0,knowledgeGaps:0,moderation:0,txadmin:0,personal:0},personal:[],queues:[]};
+  let notices:Notice={total:0,counts:{tickets:0,issues:0,suggestions:0,knowledgeGaps:0,moderation:0,txadmin:0,ai:0,personal:0},personal:[],queues:[]};
   let activity:Activity[]=[];let offline=false;
   try{[notices,activity]=await Promise.all([api<Notice>('/api/notifications'),api<Activity[]>('/api/activity')]);}catch{offline=true;}
 
@@ -32,7 +32,8 @@ export default async function Home(){
     can(access,'suggestions.view')?{label:'Suggestions',value:notices.counts.suggestions,note:'need review',href:'/suggestions',tone:'suggestions'}:null,
     can(access,'knowledge.gaps.view')?{label:'Knowledge gaps',value:notices.counts.knowledgeGaps,note:'need an answer',href:'/knowledge-gaps',tone:'gaps'}:null,
     can(access,'moderation.view')?{label:'Moderation',value:notices.counts.moderation,note:'cases pending review',href:'/moderation',tone:'tone-bad'}:null,
-    can(access,'txadmin.view')?{label:'Server alerts',value:notices.counts.txadmin,note:'open txAdmin errors',href:'/txadmin',tone:'txadmin'}:null
+    can(access,'txadmin.view')?{label:'Server alerts',value:notices.counts.txadmin,note:'open txAdmin errors',href:'/txadmin',tone:'txadmin'}:null,
+    can(access,'settings.bot.manage')&&notices.counts.ai?{label:'AI service',value:1,note:'configuration needs attention',href:'/settings/bot',tone:'tone-bad'}:null
   ].filter(Boolean) as Array<{label:string;value:number;note:string;href:string;tone:string}>;
   const shortcuts=[
     can(access,'tickets.view')?{label:'Open tickets',href:'/tickets'}:null,

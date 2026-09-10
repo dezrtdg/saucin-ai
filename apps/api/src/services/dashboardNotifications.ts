@@ -1,4 +1,5 @@
 import { db } from '../db.js';
+import { getAiRuntimeHealth } from './aiRuntime.js';
 
 export type DashboardNotificationKind =
   | 'ticket_reply'|'ticket_mention'
@@ -31,13 +32,15 @@ export async function getDashboardNotifications(input: NotificationInput) {
   const canGaps=allowed(input,'knowledge.gaps.view');
   const canModeration=allowed(input,'moderation.view');
   const canTxAdmin=allowed(input,'txadmin.view');
+  const canAiHealth=allowed(input,'settings.bot.manage');
 
   const none=Promise.resolve({rows:[]} as any);
   const zero=Promise.resolve({rows:[{count:0}]} as any);
   const [
-    ticketQueue,issueQueue,suggestionQueue,gapQueue,moderationQueue,txAdminQueue,
+    aiHealth,ticketQueue,issueQueue,suggestionQueue,gapQueue,moderationQueue,txAdminQueue,
     ticketReplies,ticketMentions,issueReplies,issueMentions,suggestionReplies,suggestionMentions
   ]=await Promise.all([
+    canAiHealth?getAiRuntimeHealth():Promise.resolve(null),
     canTickets?db.query(`SELECT count(*)::int AS count FROM tickets WHERE status='open' AND claimed_by_user_id IS NULL`):zero,
     canIssues?db.query(`SELECT count(*)::int AS count FROM issue_candidates WHERE status IN ('detected','reported')`):zero,
     canSuggestions?db.query(`SELECT count(*)::int AS count FROM suggestions WHERE status IN ('candidate','reviewing')`):zero,
@@ -185,13 +188,14 @@ export async function getDashboardNotifications(input: NotificationInput) {
     knowledgeGaps:Number(gapQueue.rows[0]?.count||0),
     moderation:Number(moderationQueue.rows[0]?.count||0),
     txadmin:Number(txAdminQueue.rows[0]?.count||0),
+    ai:aiHealth?.needs_attention?1:0,
     automation:0,
     personal:personal.length
   };
   counts.automation=counts.tickets+counts.issues+counts.suggestions+counts.knowledgeGaps+counts.moderation+counts.txadmin;
   return {
     generated_at:new Date().toISOString(),
-    total:counts.tickets+counts.issues+counts.suggestions+counts.knowledgeGaps+counts.moderation+counts.txadmin,
+    total:counts.tickets+counts.issues+counts.suggestions+counts.knowledgeGaps+counts.moderation+counts.txadmin+counts.ai,
     counts,
     personal,
     queues:[
@@ -200,7 +204,8 @@ export async function getDashboardNotifications(input: NotificationInput) {
       ...(Number(suggestionQueue.rows[0]?.count||0)?[{key:'suggestions',label:'Suggestions needing review',count:Number(suggestionQueue.rows[0].count),href:'/suggestions?status=candidate'}]:[]),
       ...(counts.knowledgeGaps?[{key:'knowledge-gaps',label:'Open knowledge gaps',count:counts.knowledgeGaps,href:'/knowledge-gaps?status=open'}]:[]),
       ...(counts.moderation?[{key:'moderation',label:'Moderation reviews',count:counts.moderation,href:'/moderation?status=pending'}]:[]),
-      ...(counts.txadmin?[{key:'txadmin',label:'Server attention needed',count:counts.txadmin,href:'/txadmin?view=attention&status=open'}]:[])
+      ...(counts.txadmin?[{key:'txadmin',label:'Server attention needed',count:counts.txadmin,href:'/txadmin?view=attention&status=open'}]:[]),
+      ...(counts.ai?[{key:'ai-health',label:'AI service needs attention',count:1,href:'/settings/bot'}]:[])
     ]
   };
 }

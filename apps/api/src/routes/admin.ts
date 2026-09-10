@@ -14,6 +14,7 @@ import { getDashboardNotifications, markDashboardNotificationsRead } from '../se
 import { acknowledgeTxAdminEvent, correlateIssueWithTxAdmin, getTxAdminOverview, getTxAdminSettings, listTxAdminEvents, resolveTxAdminEvent, updateTxAdminSettings } from '../services/txadmin.js';
 import { getAutomationCenter, recordAutomationFeedback, updateAutomationModuleSetting } from '../services/automation.js';
 import { upsertLearningExample } from '../services/learning.js';
+import { getAiRuntimeHealth } from '../services/aiRuntime.js';
 
 async function requireApiKey(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers['x-api-key'] !== env.DASHBOARD_API_KEY) {
@@ -43,6 +44,7 @@ function routeRequirement(method: string, route: string): string[] | null {
     'PUT /api/channels': ['channels.manage'],
     'PUT /api/channels/:id': ['channels.manage'],
     'GET /api/bot/settings': ['settings.bot.manage'],
+    'GET /api/ai/health': ['settings.bot.manage'],
     'PUT /api/bot/settings': ['settings.bot.manage'],
     'GET /api/knowledge/settings': ['knowledge.view'],
     'POST /api/knowledge/content-types': ['settings.knowledge.manage'],
@@ -822,6 +824,8 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     // Bot behavior settings
+    admin.get('/api/ai/health', async () => getAiRuntimeHealth());
+
     admin.get('/api/bot/settings', async () => {
       const result = await db.query(`
         SELECT direct_mentions_enabled, direct_mentions_bypass_channel_mode,

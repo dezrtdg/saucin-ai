@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
-import OpenAI from 'openai';
 import { db } from '../db.js';
 import { env } from '../env.js';
 import { correlateIssueWithTxAdmin } from './txadmin.js';
 import { categoryCalibrationPrompt } from './learning.js';
+import { aiClient as client } from './aiRuntime.js';
 
 export type IssueQueryPlan = {
   original: string;
@@ -30,8 +30,6 @@ export type IssueMatch = {
   score: number;
   match_types: string[];
 };
-
-const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
 function unique(values: string[], max = 30) {
   return [...new Set(values.map(value => value.trim()).filter(Boolean))].slice(0, max);

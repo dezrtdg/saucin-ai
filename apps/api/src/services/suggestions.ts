@@ -1,7 +1,7 @@
-import OpenAI from 'openai';
 import { db } from '../db.js';
 import { env } from '../env.js';
 import { categoryCalibrationPrompt } from './learning.js';
+import { aiClient as client } from './aiRuntime.js';
 
 export type SuggestionQueryPlan = {
   original: string;
@@ -10,8 +10,6 @@ export type SuggestionQueryPlan = {
   searchTerms?: string[];
   relatedTopics?: string[];
 };
-
-const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
 export type SuggestionAutomationSettings = {
   forum_channel_id: string | null;

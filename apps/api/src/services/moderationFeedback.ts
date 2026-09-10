@@ -1,9 +1,7 @@
-import OpenAI from 'openai';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { env } from '../env.js';
-
-const client = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
+import { aiClient as client } from './aiRuntime.js';
 
 const reanalysisSchema = z.object({
   matched: z.boolean(),
