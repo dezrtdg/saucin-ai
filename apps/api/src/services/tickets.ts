@@ -233,11 +233,11 @@ export async function dueTicketFollowups(limit=50){
                WHEN t.status='claimed' THEN 'staff_reply_due'
                ELSE 'user_reply_due'
              END AS followup_kind,
-             CASE
+             date_trunc('milliseconds',CASE
                WHEN t.status='open' AND t.claimed_by_user_id IS NULL THEN t.created_at
                WHEN t.status='claimed' THEN COALESCE(lm.discord_created_at,t.last_message_at,t.updated_at)
                ELSE GREATEST(COALESCE(t.last_message_at,t.updated_at),t.updated_at)
-             END AS trigger_at
+             END) AS trigger_at
         FROM tickets t
         JOIN ticket_types tt ON tt.key=t.type_key
         CROSS JOIN ticket_settings s
@@ -261,7 +261,12 @@ export async function dueTicketFollowups(limit=50){
     SELECT c.*,COALESCE(f.attempt_count,0)::int AS previous_attempts
       FROM candidates c
       LEFT JOIN ticket_followup_events f ON f.ticket_id=c.id AND f.followup_kind=c.followup_kind AND f.trigger_at=c.trigger_at
-     WHERE f.id IS NULL OR (f.status='failed' AND f.attempt_count<3 AND f.next_retry_at<=NOW())
+     WHERE (f.id IS NULL OR (f.status='failed' AND f.attempt_count<3 AND f.next_retry_at<=NOW()))
+       AND NOT EXISTS (
+         SELECT 1 FROM ticket_followup_events sent
+          WHERE sent.ticket_id=c.id AND sent.followup_kind=c.followup_kind AND sent.status='sent'
+            AND sent.sent_at>=c.trigger_at
+       )
      ORDER BY c.trigger_at ASC LIMIT $1`,[Math.max(1,Math.min(100,limit))]);
   return result.rows;
 }
